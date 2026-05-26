@@ -1,0 +1,41 @@
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+
+# --- Replays: contain player names + Steam IDs (PII). Don't commit real ones. ---
+# A single tiny, anonymized fixture lives under tests/fixtures/ and is committed
+# explicitly there; everything else is ignored.
+*.aoe2record
+*.aoe2mpgame
+*.mgz
+*.mgx
+*.mgl
+!tests/fixtures/*.aoe2record
+
+# --- Generated coaching reports (keep the committed examples) ---
+reports/*
+!reports/example.md
+!reports/example.minimap.png
+*.coach.md
+*.minimap.png
+!reports/example.minimap.png
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.venv*/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Editors / OS ---
+.DS_Store
+.idea/
+.vscode/

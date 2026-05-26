@@ -1,0 +1,38 @@
+name: Update game data
+
+# Keeps the bundled name/terrain tables current with new patches/DLCs. Runs weekly
+# (and on demand), regenerates the data from mgz.reference + aoe2techtree, and opens a
+# PR only when something actually changed.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (full backend)
+        run: pip install -e ".[full]"
+      - name: Regenerate bundled data
+        run: aoe2coach update-data
+      - name: Open a PR if data changed
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(data): refresh bundled game data"
+          title: "chore(data): refresh bundled game data"
+          body: |
+            Automated refresh of `src/aoe2coach/data/` from `mgz.reference`
+            + aoe2techtree. Review the diff (new civs/units/maps from a recent
+            patch) and merge if it looks right.
+          branch: auto/update-game-data
+          delete-branch: true
+          add-paths: src/aoe2coach/data/**
