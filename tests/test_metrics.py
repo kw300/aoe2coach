@@ -22,6 +22,7 @@ def _player(number, name, civ_id, **kw):
         color_id=kw.get("color_id", number - 1),
         team_id=kw.get("team_id", 1),
         age_up_ms=kw.get("age_up_ms", {}),
+        age_research_ms=kw.get("age_research_ms", {}),
         build_actions=kw.get("build_actions", 0),
         total_actions=kw.get("total_actions", 0),
         resigned_at_ms=kw.get("resigned_at_ms"),
@@ -36,13 +37,13 @@ def _player(number, name, civ_id, **kw):
     )
 
 
-def _replay(players, *, backend="full", duration_ms=2_400_000):
+def _replay(players, *, backend="full", duration_ms=2_400_000, map_name="Arena"):
     return ParsedReplay(
         path="synthetic.aoe2record",
         backend=backend,
         game_version="VER 66.6",
         build=999999,
-        map_name="Arena",
+        map_name=map_name,
         map_id=29,
         map_size="Tiny",
         diplomacy="1v1",
@@ -101,10 +102,32 @@ def test_idle_tc_gap_detection():
     p = _player(1, "Alice", 43, villager_queue_ms=times)
     m = build_metrics(_replay([p])).players[0]
     assert m.villagers_queued == len(times)
-    assert m.longest_idle_gap_s >= 90
+    assert m.villagers_16m == 3 + len(times)
+    assert m.longest_idle_gap_s >= 60
     # The 90s gap (~65s over the 25s ideal) should register as idle time.
     assert m.estimated_idle_tc_s >= 60
-    assert any(g["gap_s"] >= 90 for g in m.idle_tc_gaps)
+    assert any(g["gap_s"] >= 60 for g in m.idle_tc_gaps)
+
+
+def test_batched_villager_queues_do_not_count_as_idle_tc():
+    p = _player(1, "Alice", 43, villager_queue_ms=[0, 0, 0, 0, 100_000])
+    m = build_metrics(_replay([p])).players[0]
+    assert m.idle_tc_gaps == []
+    assert m.estimated_idle_tc_s == 0
+
+
+def test_idle_tc_ignores_age_research_time():
+    p = _player(
+        1,
+        "Alice",
+        43,
+        age_up_ms={"feudal": 700_000},
+        age_research_ms={"feudal": 570_000},
+        villager_queue_ms=[560_000, 715_000],
+    )
+    m = build_metrics(_replay([p])).players[0]
+    assert m.idle_tc_gaps == []
+    assert m.estimated_idle_tc_s == 0
 
 
 def test_build_order_labels_and_units():
@@ -112,15 +135,93 @@ def test_build_order_labels_and_units():
         1,
         "Alice",
         43,
-        build_order=[(2000, "House"), (110_000, "Barracks")],
+        age_up_ms={"feudal": 650_000},
+        build_order=[(2000, "House"), (590_000, "Barracks"), (760_000, "Stable")],
         units_trained={"Knight": 10, "Monk": 2},
         research_names=["Feudal Age", "Loom", "Wheelbarrow", "Castle Age", "Loom"],
     )
     m = build_metrics(_replay([p])).players[0]
-    assert m.build_order == ["House@0:02", "Barracks@1:50"]
+    assert m.build_order == ["House@0:02", "Barracks@9:50", "Stable@12:40"]
     assert m.units_trained["Knight"] == 10
     assert m.techs == ["Loom", "Wheelbarrow"]  # age-ups filtered, order-preserving, deduped
     assert m.techs_researched == 2  # distinct count, not duplicate click events
+    assert m.opening == "Unclear opening"
+    assert m.opening_confidence == "low"
+    feudal = next(c for c in m.build_order_comparison if c["checkpoint"] == "Feudal")
+    assert feudal["status"] == "early"
+
+
+def test_key_tech_status_joins_researched_and_civ_availability():
+    malay = _player(
+        1,
+        "Malay",
+        29,
+        research_names=["Husbandry", "Blast Furnace", "Scale Barding Armor"],
+    )
+    khmer = _player(2, "Khmer", 28, research_names=["Bloodlines"])
+    metrics = build_metrics(_replay([malay, khmer]))
+    by_name = {
+        p.name: {row["tech"]: row["status"] for row in p.key_tech_status} for p in metrics.players
+    }
+
+    assert by_name["Malay"]["Husbandry"] == "researched"
+    assert by_name["Malay"]["Blast Furnace"] == "researched"
+    assert by_name["Malay"]["Bloodlines"] == "not_available"
+    assert by_name["Malay"]["Cavalier"] == "available_not_researched"
+    assert by_name["Malay"]["Chain Barding Armor"] == "not_available"
+    assert by_name["Malay"]["Plate Barding Armor"] == "not_available"
+    assert by_name["Khmer"]["Bloodlines"] == "researched"
+    assert by_name["Khmer"]["Husbandry"] == "available_not_researched"
+    assert by_name["Khmer"]["Plate Barding Armor"] == "available_not_researched"
+    assert by_name["Khmer"]["Elite Battle Elephant"] == "available_not_researched"
+
+
+def test_key_tech_status_empty_for_fast_backend():
+    p = _player(1, "Alice", 28, research_names=["Bloodlines"])
+    m = build_metrics(_replay([p], backend="fast")).players[0]
+    assert m.key_tech_status == []
+
+
+def test_action_plan_and_timeline_from_deterministic_profile():
+    # Idle TC plus a late/missing military check should produce a concrete practice plan.
+    times = list(range(0, 200_000, 25_000)) + [320_000, 345_000]
+    p = _player(
+        1,
+        "Alice",
+        43,
+        age_up_ms={"feudal": 780_000},
+        villager_queue_ms=times,
+        build_order=[(2_000, "House")],
+    )
+    m = build_metrics(_replay([p], duration_ms=1_500_000))
+    alice = m.players[0]
+
+    assert alice.opening == "Unclear opening"
+    assert alice.improvement_profile[0]["area"] == "Town Center uptime"
+    assert alice.action_plan[0]["focus"] == "Town Center uptime"
+    assert any(e["type"] == "idle_tc" for e in m.timeline)
+    assert m.matchup_context["map_style"] == "closed"
+
+
+def test_matchup_context_for_open_1v1():
+    a = _player(
+        1,
+        "Franks",
+        8,
+        age_up_ms={"feudal": 640_000},
+        build_order=[(580_000, "Barracks"), (730_000, "Stable")],
+    )
+    b = _player(
+        2,
+        "Britons",
+        2,
+        age_up_ms={"feudal": 650_000},
+        build_order=[(600_000, "Barracks"), (740_000, "Archery Range")],
+    )
+    m = build_metrics(_replay([a, b], duration_ms=1_800_000, map_name="Arabia"))
+    assert m.players[0].opening == "Unclear opening"
+    assert m.players[1].opening == "Unclear opening"
+    assert m.matchup_context["map_style"] == "open"
 
 
 def test_battle_timeline_and_resource_float():

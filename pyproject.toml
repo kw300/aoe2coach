@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "aoe2coach"
 version = "0.1.0"
-description = "An AI coach for Age of Empires II: Definitive Edition replays, powered by Claude."
+description = "An AI coach for Age of Empires II: Definitive Edition replays, powered by a bring-your-own model."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "aoe2coach contributors" }]
-keywords = ["age-of-empires", "aoe2", "replay", "coaching", "claude", "anthropic"]
+keywords = ["age-of-empires", "aoe2", "replay", "coaching", "llm", "openai", "anthropic"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -18,9 +18,9 @@ classifiers = [
 ]
 
 dependencies = [
-    # Claude. The coaching layer reads ANTHROPIC_API_KEY from the environment.
+    # Default model provider. The OpenAI-compatible provider is available via [openai].
     "anthropic>=0.40",
-    # Loads ANTHROPIC_API_KEY from a local .env during development (never committed).
+    # Loads model-provider keys from a local .env during development (never committed).
     "python-dotenv>=1.0",
     # NOTE: the replay parser is NOT here — pick a backend extra below. `mgz` and
     # `mgz-fast` both install as the `mgz` module and cannot coexist.

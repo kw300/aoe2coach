@@ -1,33 +1,37 @@
-"""Layer 3 — turn deterministic metrics into coaching advice using Claude.
+"""Layer 3 — turn deterministic metrics into coaching advice with a model.
 
-This is the only module that calls the Anthropic API. It follows the SDK best
-practices:
+This is the only module that calls a model provider. It supports:
+
+- ``anthropic`` — native Anthropic SDK with prompt caching, adaptive thinking, and
+  effort controls.
+- ``openai`` — OpenAI-compatible chat completions, including OpenAI, OpenRouter, and
+  local servers via ``OPENAI_BASE_URL``.
+
+Shared conventions:
 
 - Key handling lives in :mod:`aoe2coach.config` (env-only, fail-fast). The SDK's
-  ``Anthropic()`` would read ``ANTHROPIC_API_KEY`` itself, but we validate first
-  so the error is friendly.
-- **Prompt caching:** the system prompt + benchmark reference are a large, stable
-  prefix sent as cached system blocks. The per-replay metrics JSON — which differs
-  every call — goes in the user turn, *after* the cache breakpoint. Repeated
-  analyses reuse the cached prefix at ~10% cost. (Caching only engages once the
-  prefix exceeds the model's minimum cacheable size; below that it's a silent
-  no-op, never an error.)
-- **Model & thinking:** defaults to ``claude-opus-4-7`` with adaptive thinking and
-  a configurable ``effort`` — the current best-practice combination.
+  clients can read keys themselves, but we validate first so the error is friendly.
+- **Prompt caching:** on the Anthropic path, the system prompt + benchmark reference
+  are a large, stable prefix sent as cached system blocks. The per-replay metrics
+  JSON — which differs every call — goes in the user turn, after the cache
+  breakpoint.
+- **Model selection:** configured with ``AOE2COACH_MODEL``; lightweight habit
+  detection can use a separate ``AOE2COACH_DETECT_MODEL``.
 - **Streaming:** optional, for live output in the terminal.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 
 import anthropic
 
 from .benchmarks import BENCHMARKS_MARKDOWN
-from .config import Config, load_config
+from .config import PROVIDER_DEFAULTS, Config, load_config
 from .contextpack import build_context_pack, format_context_pack
 from .metrics import ReplayMetrics
 
@@ -99,7 +103,7 @@ def coach_replay(
     stream: bool = False,
     on_text: Callable[[str], None] | None = None,
 ) -> CoachResult:
-    """Send metrics to Claude and return coaching advice.
+    """Send metrics to the configured model and return coaching advice.
 
     Args:
         metrics: the deterministic features for one replay.
@@ -130,8 +134,8 @@ def coach_trends(
     stream: bool = False,
     on_text: Callable[[str], None] | None = None,
 ) -> CoachResult:
-    """Send a multi-game :class:`~aoe2coach.trends.TrendSummary` to Claude for
-    recurring-weakness coaching."""
+    """Send a multi-game :class:`~aoe2coach.trends.TrendSummary` to the configured
+    model for recurring-weakness coaching."""
     config = config or load_config(require_key=True)
     payload = json.dumps(summary.to_dict(), sort_keys=True, indent=2, default=str)
     user = (
@@ -145,6 +149,126 @@ def coach_trends(
         stream=stream,
         on_text=on_text,
     )
+
+
+def _habit_detection_payload(metrics: ReplayMetrics) -> dict:
+    """Compact replay facts for the lightweight habit detector.
+
+    Deliberately omits deterministic ``improvement_profile`` / ``action_plan`` so
+    the model is judging from replay facts rather than rephrasing our thresholds.
+    """
+    return {
+        "replay": {
+            "map_name": metrics.map_name,
+            "duration_s": metrics.duration_s,
+            "recorded_at": metrics.recorded_at,
+            "backend": metrics.backend,
+            "rated": metrics.rated,
+            "matchup_context": metrics.matchup_context,
+        },
+        "players": [
+            {
+                "name": p.name,
+                "civilization": p.civilization,
+                "result": p.result,
+                "feudal_time_s": p.feudal_time_s,
+                "castle_time_s": p.castle_time_s,
+                "imperial_time_s": p.imperial_time_s,
+                "build_order_comparison": p.build_order_comparison,
+                "villagers_queued": p.villagers_queued,
+                "idle_tc_gaps": p.idle_tc_gaps,
+                "estimated_idle_tc_s": p.estimated_idle_tc_s,
+                "units_trained": p.units_trained,
+                "techs": p.techs,
+                "key_tech_status": p.key_tech_status,
+                "eapm": p.eapm,
+                "peak_resources": p.peak_resources,
+                "high_float_s": p.high_float_s,
+                "biggest_loss": p.biggest_loss,
+                "objects_lost_total": p.objects_lost_total,
+            }
+            for p in metrics.players
+        ],
+        "battles": metrics.battles,
+        "timeline": metrics.timeline,
+    }
+
+
+def _detection_config(config: Config) -> Config:
+    detect_model = os.environ.get("AOE2COACH_DETECT_MODEL", "").strip()
+    if not detect_model:
+        if config.provider == "anthropic":
+            detect_model = PROVIDER_DEFAULTS["anthropic"]["detect_model"]
+        elif config.provider == "openai" and not config.base_url:
+            detect_model = PROVIDER_DEFAULTS["openai"]["detect_model"]
+        else:
+            detect_model = config.model
+    return replace(
+        config,
+        model=detect_model,
+        effort="",
+        max_tokens=min(config.max_tokens, 1200),
+    )
+
+
+def _json_from_text(text: str):
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return json.loads(stripped)
+
+
+def detect_habits(
+    metrics: ReplayMetrics,
+    *,
+    config: Config | None = None,
+    focus_player: str | None = None,
+) -> dict:
+    """Use a cheaper model to propose nuanced practice-focus candidates."""
+    config = _detection_config(config or load_config(require_key=True))
+    payload = json.dumps(_habit_detection_payload(metrics), sort_keys=True, indent=2, default=str)
+    focus = f"\nFocus player: {focus_player}\n" if focus_player else ""
+    system = (
+        "You are an Age of Empires II practice-plan assistant. Identify candidate "
+        "habits a player might pin for deliberate practice, using only the replay "
+        "facts provided. Be nuanced: prefer recurring decision patterns over raw "
+        "threshold labels. Return ONLY valid JSON with this shape: "
+        '{"habits":[{"label":"short habit name","player":"name or both",'
+        '"detail":"one sentence with evidence","priority":"high|medium|low"}]}. '
+        "Produce 3 to 6 habits. Do not invent facts."
+    )
+    user = f"{focus}Replay facts:\n```json\n{payload}\n```"
+    result = _run(
+        [{"type": "text", "text": system}],
+        user,
+        config=config,
+        stream=False,
+        on_text=None,
+    )
+    parsed = _json_from_text(result.text)
+    habits = parsed.get("habits", []) if isinstance(parsed, dict) else parsed
+    clean = []
+    for item in habits if isinstance(habits, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "")).strip()
+        detail = str(item.get("detail", "")).strip()
+        if not label:
+            continue
+        clean.append(
+            {
+                "label": label[:80],
+                "player": str(item.get("player", "")).strip()[:80],
+                "detail": detail[:240],
+                "priority": str(item.get("priority", "medium")).strip().lower()[:12] or "medium",
+            }
+        )
+    return {"habits": clean[:6], "model": result.model, "cost_note": result.cost_note}
 
 
 def _run(
@@ -185,11 +309,12 @@ def _run_anthropic(system_blocks, messages, config, stream, on_text) -> CoachRes
     request = dict(
         model=config.model,
         max_tokens=config.max_tokens,
-        thinking={"type": "adaptive"},
-        output_config={"effort": config.effort},
         system=system_blocks,
         messages=messages,
     )
+    if config.effort and _anthropic_uses_adaptive_effort(config.model):
+        request["thinking"] = {"type": "adaptive"}
+        request["output_config"] = {"effort": config.effort}
 
     if stream:
         with client.messages.stream(**request) as s:
@@ -214,8 +339,8 @@ def _run_anthropic(system_blocks, messages, config, stream, on_text) -> CoachRes
 
 def _run_openai(system_blocks, messages, config, stream, on_text) -> CoachResult:
     """OpenAI-compatible path — works with OpenAI, OpenRouter, or a local server via
-    ``OPENAI_BASE_URL``. Kept deliberately minimal (no provider-specific params like
-    temperature/effort/token caps) so it works across the widest range of endpoints."""
+    ``OPENAI_BASE_URL``. Hosted OpenAI gets reasoning effort; custom endpoints stay
+    plain because support varies."""
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover
@@ -227,10 +352,13 @@ def _run_openai(system_blocks, messages, config, stream, on_text) -> CoachResult
     # OpenAI takes one system string + the conversation turns.
     system_text = "\n\n".join(b["text"] for b in system_blocks)
     oa_messages = [{"role": "system", "content": system_text}, *messages]
+    request = {"model": config.model, "messages": oa_messages}
+    if not config.base_url and config.effort:
+        request["reasoning_effort"] = config.effort
 
     if stream:
         text_parts: list[str] = []
-        resp = client.chat.completions.create(model=config.model, messages=oa_messages, stream=True)
+        resp = client.chat.completions.create(**request, stream=True)
         for chunk in resp:
             delta = chunk.choices[0].delta.content or ""
             if delta:
@@ -239,7 +367,7 @@ def _run_openai(system_blocks, messages, config, stream, on_text) -> CoachResult
                     on_text(delta)
         return CoachResult("".join(text_parts), config.model, 0, 0, 0, 0)
 
-    resp = client.chat.completions.create(model=config.model, messages=oa_messages)
+    resp = client.chat.completions.create(**request)
     text = resp.choices[0].message.content or ""
     usage = getattr(resp, "usage", None)
     return CoachResult(
@@ -250,6 +378,11 @@ def _run_openai(system_blocks, messages, config, stream, on_text) -> CoachResult
         cache_read_tokens=0,
         cache_write_tokens=0,
     )
+
+
+def _anthropic_uses_adaptive_effort(model: str) -> bool:
+    """Haiku is used as a cheap extraction pass; effort is for analysis-tier models."""
+    return "haiku" not in model.lower()
 
 
 def build_opening_message(

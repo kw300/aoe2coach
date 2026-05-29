@@ -16,6 +16,7 @@ at a time. :func:`parse_replay` detects which is present and dispatches accordin
 
 from __future__ import annotations
 
+import datetime as _dt
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,7 +24,8 @@ from . import civdata
 
 # AoE2 research tech IDs that correspond to advancing an age (fast backend).
 _AGE_TECH = {101: "feudal", 102: "castle", 103: "imperial"}
-_AGE_RESEARCH_NAMES = {"Feudal Age", "Castle Age", "Imperial Age"}
+_AGE_RESEARCH = {"Feudal Age": "feudal", "Castle Age": "castle", "Imperial Age": "imperial"}
+_AGE_RESEARCH_NAMES = set(_AGE_RESEARCH)
 _VILLAGER_UNIT_ID = 83
 
 
@@ -42,6 +44,7 @@ class PlayerReplay:
 
     # Common (both backends, best-effort)
     age_up_ms: dict[str, int] = field(default_factory=dict)  # {"feudal": 557000, ...}
+    age_research_ms: dict[str, int] = field(default_factory=dict)
     build_actions: int = 0
     total_actions: int = 0
     resigned_at_ms: int | None = None
@@ -80,6 +83,8 @@ class ParsedReplay:
     population_limit: int | None
     players: list[PlayerReplay]
     body_complete: bool  # False if the body stream ended early (fast backend)
+    recorded_at: str | None = None
+    recorded_at_source: str | None = None
 
     @property
     def duration_label(self) -> str:
@@ -95,6 +100,23 @@ def _fmt_ms(ms: int | None) -> str:
         return "—"
     total = ms // 1000
     return f"{total // 60}:{total % 60:02d}"
+
+
+def _dt_iso(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, _dt.datetime):
+        return value.isoformat(timespec="seconds")
+    if isinstance(value, int | float):
+        return _dt.datetime.fromtimestamp(value).isoformat(timespec="seconds")
+    return str(value)
+
+
+def _file_mtime(path: Path) -> str | None:
+    try:
+        return _dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        return None
 
 
 def _detect_backend() -> str:
@@ -192,6 +214,8 @@ def _parse_full(path: Path) -> ParsedReplay:
 
     _accumulate_inputs(match.inputs, by_number)
 
+    recorded_at = _dt_iso(getattr(match, "timestamp", None))
+
     return ParsedReplay(
         path=str(path),
         backend="full",
@@ -207,6 +231,8 @@ def _parse_full(path: Path) -> ParsedReplay:
         population_limit=getattr(match, "population", None),
         players=players,
         body_complete=True,
+        recorded_at=recorded_at or _file_mtime(path),
+        recorded_at_source=("replay" if recorded_at else "file_modified"),
     )
 
 
@@ -239,7 +265,10 @@ def _accumulate_inputs(inputs, by_number: dict[int, PlayerReplay]) -> None:
                 player.units_trained[unit] = player.units_trained.get(unit, 0) + amount
         elif inp.type == "Research":
             tech = payload.get("technology") or inp.param
-            if tech and tech not in _AGE_RESEARCH_NAMES:
+            age = _AGE_RESEARCH.get(tech)
+            if age:
+                player.age_research_ms.setdefault(age, t)
+            elif tech:
                 player.research_names.append(tech)
 
 
@@ -270,6 +299,8 @@ def _parse_fast(path: Path) -> ParsedReplay:
             handle, meta, operation, Operation, Action, by_number
         )
 
+    recorded_at = _dt_iso(header.get("timestamp") or header.get("date"))
+
     return ParsedReplay(
         path=str(path),
         backend="fast",
@@ -285,6 +316,8 @@ def _parse_fast(path: Path) -> ParsedReplay:
         population_limit=de.get("population_limit"),
         players=players,
         body_complete=body_complete,
+        recorded_at=recorded_at or _file_mtime(path),
+        recorded_at_source=("replay" if recorded_at else "file_modified"),
     )
 
 
@@ -339,6 +372,7 @@ def _scan_body_fast(handle, meta, operation, Operation, Action, by_number) -> tu
             if action_type == Action.RESEARCH:
                 age = _AGE_TECH.get(data.get("technology_id"))
                 if age and age not in player.age_up_ms:
+                    player.age_research_ms[age] = t
                     player.age_up_ms[age] = t
             elif action_type == Action.BUILD:
                 player.build_actions += 1

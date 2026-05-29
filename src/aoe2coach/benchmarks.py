@@ -1,8 +1,9 @@
 """Benchmark reference data — "what good looks like" at various skill levels.
 
-This is the context that turns a stats dump into *coaching*. Claude compares a
-player's parsed metrics against these tiers to say things like "your 11:26 Feudal
-on a closed map is roughly intermediate — here's how to shave two minutes off it."
+This is the context that turns a stats dump into *coaching*. The configured model
+compares a player's parsed metrics against these tiers to say things like "your
+11:26 Feudal on a closed map is roughly intermediate — here's how to shave two
+minutes off it."
 
 The numbers are approximate community guidance (Dark→Feudal click times etc.),
 intentionally given as ranges. They are stable across requests, so this whole

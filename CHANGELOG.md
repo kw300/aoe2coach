@@ -6,10 +6,56 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project aims to fol
 
 ## [Unreleased]
 
+### Added
+- **Flagship + lightweight model workflow.** aoe2coach can use a lightweight model for
+  preliminary habit detection and a flagship model for full replay analysis and detailed
+  coaching, so users can review practice focus before the more expensive call.
+- **Replay-first web workflow.** The browser UI now previews replay facts before a full
+  model call, including map/date, player selection, win/loss, minimap, fundamentals, and a
+  readable timeline.
+- **Practice focus workflow.** Players can choose the coached player, use a lightweight
+  model to detect replay-specific habit candidates, pin useful habits, add custom goals,
+  and pass pinned/detected habits into the full coaching report as training priorities.
+- **Profile and trend goals.** The roadmap now calls out reusable player profiles,
+  multi-game trend habits, and trend-driven coaching analysis as explicit goals.
+- **Coached-player selection.** Reports can target a selected player after previewing the
+  replay, with lightweight habit detection separated from the full-analysis call so users
+  can review practice focus before spending tokens.
+- **Resizable web review panes.** The replay browser, practice panel, chat input, replay
+  list, minimap, and timeline can be resized for repeated review.
+- **Replay metadata and player colors.** Preview data now includes replay date/source,
+  team/player colors, clearer result labels, and player-colored names across the UI.
+- **Key tech status grounding.** Metrics now include deterministic researched /
+  available-but-missed / unavailable status for common upgrades, joined against the local
+  civ tech tree before the model sees the replay.
+- **Improved minimap rendering.** Minimap output handles missing object names more
+  gracefully and uses clearer player markers.
+
+### Changed
+- **Provider-neutral docs, metadata, and UI.** Public copy now frames configuration and full
+  analysis around bring-your-own-provider model settings rather than a single vendor.
+- **Grounded coaching prompt.** The system prompt now tells the model to trust
+  deterministic tech status, avoid recommending unavailable upgrades, and avoid claiming a
+  researched tech was missing.
+- **Web comparison table.** The left-panel fundamentals table focuses on direct
+  player-to-player comparison metrics such as TC idle, villagers at 16 minutes, age timings,
+  and EAPM/actions per minute.
+- **Timeline readability.** Timeline events use compact typed rows for age-ups, buildings,
+  TC idle gaps, and fights.
+- **Full-analysis flow.** Player selection now runs lightweight habit detection first; the
+  full report is launched explicitly afterward with pinned and detected habits included in
+  the model request.
+
+### Fixed
+- **Idle-TC estimation.** Villager-production gaps now account for age-up research time and
+  queued villager bursts, reducing false idle-TC reports.
+- **Detected habits persistence.** Lightweight detected habits no longer disappear when the
+  full report refreshes replay insights.
+- **Minimap sizing.** The minimap fits its resizable box without an internal scrollbar.
+
 ### Work in progress
-- **MCP workflow polish.** The MCP server is available and usable, but the Claude
-  Code/Desktop setup path, packaged config snippets, and replay-selection UX are still
-  being refined.
+- **MCP workflow polish.** The MCP server is available and usable, but client setup,
+  packaged config snippets, and replay-selection UX are still being refined.
 - **Latest-patch rich parsing.** Current-patch games work through `mgz-fast`; richer
   villager, unit, map, and engagement signals for the newest replay format remain active
   parser work.
@@ -35,8 +81,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project aims to fol
   tables (object/tech/civ/map names, terrain colors) from `mgz.reference` and
   aoe2techtree.
 - **MCP server (WIP).** Tools (`list_replays`, `replay_metrics`, `replay_trends`) and
-  prompts (`coach`, `coach_trends`) let Claude Code/Desktop use local replay metrics without
-  an aoe2coach API key. The integration is functional, with setup polish still ongoing.
+  prompts (`coach`, `coach_trends`) let MCP-compatible clients use local replay metrics
+  without an aoe2coach API key. The integration is functional, with setup polish still
+  ongoing.
 - **Bring-your-own-model.** `anthropic` (default) or any OpenAI-compatible endpoint
   (`AOE2COACH_PROVIDER=openai` → GPT / OpenRouter / local Ollama).
 - **Per-game civ context pack.** Injects the in-game civs' tech-tree + bonus notes so

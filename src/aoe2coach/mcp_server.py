@@ -1,9 +1,9 @@
 """MCP server — the "hybrid", no-API-key path.
 
 Exposes the deterministic core (parse → metrics → trends, plus the coaching
-framing) over the Model Context Protocol, so an MCP client — Claude Code, Claude
-Desktop, or any other — can read your replays and coach you using *its own* model.
-No ``ANTHROPIC_API_KEY`` lives here; the client supplies the intelligence.
+framing) over the Model Context Protocol, so an MCP-compatible client can read your
+replays and coach you using *its own* model. No ``ANTHROPIC_API_KEY`` lives here;
+the client supplies the intelligence.
 
 It reuses the exact same library functions as the CLI — only the transport differs.
 

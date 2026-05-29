@@ -21,6 +21,9 @@ reports/*
 *.minimap.png
 !reports/example.minimap.png
 
+# --- Local media exports ---
+docs/assets/*.mp4
+
 # --- Python ---
 __pycache__/
 *.py[cod]

@@ -7,8 +7,8 @@ Public API (the stable surface other code and the MCP server build on):
 
 The four pipeline layers live in dedicated modules:
     parse    → raw .aoe2record into structured objects
-    metrics  → deterministic coaching features (no Claude)
-    coach    → Claude turns metrics + benchmarks into advice
+    metrics  → deterministic coaching features (no model call)
+    coach    → the configured model turns metrics + benchmarks into advice
     report   → render advice as markdown
 """
 

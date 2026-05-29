@@ -2,9 +2,9 @@
 
 Commands:
     find                      List replays discovered on this machine.
-    metrics  [replay|latest]  Parse a replay and print its metrics JSON (no Claude,
+    metrics  [replay|latest]  Parse a replay and print its metrics JSON (no model call,
                               no API key needed).
-    analyze  [replay|latest]  Full AI coaching report (calls Claude).
+    analyze  [replay|latest]  Full AI coaching report (calls the configured model).
 
 ``replay`` may be a path or the literal ``latest`` (the default) for the most
 recent discovered replay.
@@ -191,11 +191,11 @@ def build_parser() -> argparse.ArgumentParser:
         func=_cmd_find
     )
 
-    m = sub.add_parser("metrics", help="Print parsed metrics JSON (no Claude needed).")
+    m = sub.add_parser("metrics", help="Print parsed metrics JSON (no model needed).")
     m.add_argument("replay", nargs="?", default="latest", help="Path or 'latest'.")
     m.set_defaults(func=_cmd_metrics)
 
-    a = sub.add_parser("analyze", help="Generate an AI coaching report (calls Claude).")
+    a = sub.add_parser("analyze", help="Generate an AI coaching report (calls the model).")
     a.add_argument("replay", nargs="?", default="latest", help="Path or 'latest'.")
     a.add_argument("--player", help="Coach only the player with this name.")
     a.add_argument("--stream", action="store_true", help="Stream coaching as it's written.")
@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--player", help="Focus player name (default: most frequent across games).")
     tr.add_argument("--last", type=int, default=10, help="How many recent games (default 10).")
     tr.add_argument("--stream", action="store_true", help="Stream the coaching.")
-    tr.add_argument("--no-coach", action="store_true", help="Print the trend JSON, skip Claude.")
+    tr.add_argument("--no-coach", action="store_true", help="Print the trend JSON, skip the model.")
     tr.set_defaults(func=_cmd_trends)
 
     mm = sub.add_parser("minimap", help="Render a minimap PNG (full backend + viz extra).")
@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # config + API + parse errors → one clean line
-        # Import lazily to avoid a hard dependency for non-Claude commands.
+        # Import lazily to avoid a hard dependency for commands that do not call a model.
         from .config import ConfigError
 
         try:

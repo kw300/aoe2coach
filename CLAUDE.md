@@ -10,11 +10,11 @@ report. Pipeline: **parse → metrics → coach → report**.
 
 ## Architecture map
 
-| Layer | Module | Responsibility | Touches Claude? |
+| Layer | Module | Responsibility | Touches model? |
 |-------|--------|----------------|-----------------|
 | 1 | `src/aoe2coach/parse.py` | Decode the binary replay into `ParsedReplay`. The **only** module that touches raw bytes. Dual backend: full `mgz` (rich) or `mgz-fast` (current patch), auto-detected. | No |
 | 2 | `src/aoe2coach/metrics.py` | Pure, deterministic coaching features → `ReplayMetrics`. | No |
-| 3 | `src/aoe2coach/coach.py` | Send metrics + benchmarks to Claude, return advice. | **Yes** |
+| 3 | `src/aoe2coach/coach.py` | Send metrics + benchmarks to the model, return advice. | **Yes** |
 | 4 | `src/aoe2coach/report.py` | Render markdown. | No |
 | — | `cli.py` | `find`/`metrics`/`analyze`/`trends`/`minimap`/`web`/`update-data`. | via coach |
 | — | `trends.py` | Multi-game aggregation → `TrendSummary` (habits across games). | No |
@@ -30,28 +30,39 @@ report. Pipeline: **parse → metrics → coach → report**.
 
 ## Hard rules
 
-1. **Secrets only from the environment.** The API key comes from `ANTHROPIC_API_KEY`
-   via `config.load_config()`. Never hard-code a key, never add a default value,
-   never log or print it. `.env` is gitignored; `env.example` is the template.
+1. **Secrets only from the environment.** Provider keys come from `ANTHROPIC_API_KEY`
+   or `OPENAI_API_KEY` via `config.load_config()`. Never hard-code a key, never add
+   a default value, never log or print it. `.env` is gitignored; `env.example` is
+   the template.
 2. **Never commit real replays.** They embed player names + Steam IDs (PII). The
    `.gitignore` blocks `*.aoe2record` except an anonymized fixture under
    `tests/fixtures/`. The pre-commit `gitleaks` hook guards secrets.
-3. **Keep deterministic work out of Claude.** Numbers (timings, counts, win/loss)
-   are computed in `metrics.py`. Claude coaches on them; it must not recompute
+3. **Keep deterministic work out of the model.** Numbers (timings, counts, win/loss)
+   are computed in `metrics.py`. The model coaches on them; it must not recompute
    them. If you need a new metric, add it to layer 2, not to the prompt.
 4. **Don't send raw replays to the model.** Only the compact `ReplayMetrics` dict
-   (a few KB) plus the static benchmarks go to Claude — this is what keeps it
+   (a few KB) plus the static benchmarks go to the model — this is what keeps it
    cheap and keeps the cache prefix stable.
 
-## Claude API conventions (see the `claude-api` skill)
+## Model provider conventions
 
-- Model defaults to `claude-opus-4-7` (configurable via `AOE2COACH_MODEL`).
-- Use **adaptive thinking** (`thinking={"type": "adaptive"}`) + `output_config`
-  `effort`. Do **not** use `budget_tokens` (removed on Opus 4.7).
-- **Prompt caching:** system prompt + `benchmarks.py` are the stable cached prefix
-  (cache breakpoint on the last system block); the per-replay JSON goes in the user
-  turn, after the breakpoint. Don't interpolate volatile data (timestamps, the
-  metrics) into the system blocks or you'll bust the cache.
+- Provider defaults to `anthropic` with `claude-opus-4-8` for full analysis and
+  `claude-haiku-4-5` for habit detection (configurable via `AOE2COACH_MODEL` and
+  `AOE2COACH_DETECT_MODEL`). If no provider is set but `OPENAI_API_KEY` exists, the
+  provider is `openai` with `gpt-5.5` for full analysis and `gpt-5.4-mini` for habit
+  detection. Custom OpenAI-compatible endpoints (`OPENAI_BASE_URL`) require
+  endpoint-specific model ids.
+- Native Anthropic requests use **adaptive thinking** (`thinking={"type": "adaptive"}`)
+  + `output_config` `effort`. Do **not** use `budget_tokens` (removed on current Opus
+  models).
+- `AOE2COACH_EFFORT` is provider-aware: Anthropic accepts `low|medium|high|xhigh|max`
+  and defaults to `high`; hosted OpenAI accepts `none|low|medium|high|xhigh` and defaults
+  to `high`. Custom `OPENAI_BASE_URL` endpoints do not receive
+  `reasoning_effort` because support varies.
+- **Prompt caching:** on the Anthropic path, system prompt + `benchmarks.py` are the
+  stable cached prefix (cache breakpoint on the last system block); the per-replay
+  JSON goes in the user turn, after the breakpoint. Don't interpolate volatile data
+  (timestamps, the metrics) into the system blocks or you'll bust the cache.
 
 ## The two parser backends — important
 
@@ -96,10 +107,10 @@ games) → `[full]`. `_parse_full` and `_parse_fast` both return the same `Parse
 ## Commands
 
 ```bash
-pip install -e ".[full,dev,mcp]"   # full backend + dev + mcp (or swap full→fast)
-pytest                             # synthetic unit tests + 1 download-on-demand integration test
-ruff check . && ruff format .      # lint + format
-pre-commit install                 # enable gitleaks + ruff hooks
+pip install -e ".[full,dev,mcp]"            # full backend + dev + mcp (or swap full→fast)
+pytest                                      # synthetic unit tests + 1 download-on-demand integration test
+ruff check . && ruff format .               # lint + format
+pre-commit install                          # enable gitleaks + ruff hooks
 aoe2coach metrics <compatible.aoe2record>   # smoke-test parse+metrics (no key needed)
 ```
 

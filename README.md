@@ -11,9 +11,11 @@ army choices, upgrades, and the fights that swung the game.
 
 The replay stays in the conversation. Follow-ups can dig into units, battles, economy,
 market use, civ bonuses, or recurring habits across recent games without starting over.
+The web workflow is built around practice focus: detect likely habits from the replay, pin
+the ones worth training, and carry those goals into the full coaching report.
 
-**Best results currently come from replays recorded before the February 2026 AoE2 DE
-patch.** The full parser exposes villager queues, EAPM, map data, commands, and richer
+**Best results currently come from replays recorded before the February 2026 Last Chieftains
+update.** The full parser exposes villager queues, EAPM, map data, commands, and richer
 object timelines for those games. Newer ladder games still run through a lightweight parser
 while the rich parser catches up to the updated replay format.
 
@@ -22,14 +24,17 @@ while the rich parser catches up to the updated replay format.
 This sample analyzes a Khmer vs Malay Arabia game between
 [**Hera**](https://liquipedia.net/ageofempires/Hera) and
 [**Sora Kuma**](https://liquipedia.net/ageofempires/Sora_Kuma), two of the strongest AoE2
-players in the world. Watch the game, then read the aoe2coach follow-up conversation on the
-same replay.
+players in the world. Watch the match, then try the aoe2coach web workflow on the same
+replay: preview facts first, choose the player to coach, review lightweight habit
+suggestions, pin the habits worth practicing, and run the full analysis when ready.
 
 <p>
   <a href="https://www.youtube.com/watch?v=T3ZhmVcX3Vw"><img alt="Play the Hera vs Sora Kuma match VOD on YouTube" src="docs/assets/youtube-card.jpg" width="640"></a>
 </p>
 
-<video src="https://github.com/user-attachments/assets/d2434791-f988-42c7-98ce-fce22073eb13" width="640" controls></video>
+<video src="https://github.com/user-attachments/assets/d0c3580a-7cbc-4ab1-ad04-42d4e35166bc" width="720" controls></video>
+
+[Watch the aoe2coach demo video.](https://github.com/user-attachments/assets/d0c3580a-7cbc-4ab1-ad04-42d4e35166bc)
 
 [Read the sample aoe2coach chat on this game.](reports/example.md)
 
@@ -42,7 +47,9 @@ same replay.
 ```bash
 git clone https://github.com/kw300/aoe2coach
 cd aoe2coach
-python -m venv .venv && source .venv/bin/activate       # Windows: .venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -U pip
 pip install -e ".[full,web]"       # rich parser for older replays
 ```
 
@@ -51,12 +58,40 @@ For current-patch replays, install `.[fast,web]` instead.
 ### 2. Configure
 
 ```bash
-cp env.example .env                # add an Anthropic API key to .env (gitignored)
+cp env.example .env                # add an API key/provider config (gitignored)
 ```
 
-Get an Anthropic key at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys).
-The CLI and browser UI both read configuration from the environment or local `.env`; the
-web app never asks for or stores API keys.
+Get a key from the [Anthropic Console](https://console.anthropic.com/settings/keys) for
+Claude models or [OpenAI API keys](https://platform.openai.com/api-keys) for GPT models.
+You bring the key and pay the provider directly; aoe2coach does not host or resell API
+access.
+
+Anthropic:
+
+```bash
+AOE2COACH_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+OpenAI:
+
+```bash
+AOE2COACH_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+```
+
+API calls cost money; check [Anthropic pricing](https://www.anthropic.com/pricing) or
+[OpenAI pricing](https://platform.openai.com/docs/pricing/) before running full analysis.
+aoe2coach uses a lightweight model for preliminary habit detection and a flagship model
+for the replay report and detailed coaching.
+The CLI and browser UI read local `.env`; the web app never asks for or stores API keys.
+
+Optional model overrides, reasoning effort, and OpenAI-compatible endpoint examples are in
+[`env.example`](env.example).
+
+Prefer to bring the model through an MCP-compatible assistant instead of configuring an
+aoe2coach API key? That path is in progress; see
+[Other ways to run it](#other-ways-to-run-it) and [docs/mcp.md](docs/mcp.md).
 
 ### 3. Run
 
@@ -64,7 +99,13 @@ web app never asks for or stores API keys.
 aoe2coach web                      # opens a browser
 ```
 
-Then drag in a replay, or pick one from the left pane, and chat with the coach.
+Then drag in a replay, or pick one from the left pane. The web app previews deterministic
+facts before any full analysis call: map, players, civs, result, replay date, minimap,
+fundamentals, and a readable timeline. Choose the player to coach, review the lightweight
+practice-focus suggestions, pin any habits worth tracking, add custom habits if desired,
+then run the full analysis using the flagship model. Pinned and detected habits are passed into
+the report so the coach can connect the replay evidence to the player's current training
+goals.
 
 Prefer the terminal? The CLI does the same, scriptably:
 
@@ -76,8 +117,9 @@ aoe2coach metrics latest        # stats JSON
 aoe2coach minimap latest        # map PNG
 ```
 
-Bring an API key — a single report is **~$0.05–0.15** on Claude Opus 4.7 (a few cents),
-less on Sonnet/Haiku. Saved reports land in `reports/` ([see a sample](reports/example.md)).
+Bring an API key. Cost depends on the model and provider: aoe2coach can use a cheaper
+model for practice-focus detection and a flagship model for the final coaching report.
+Saved reports land in `reports/` ([see a sample](reports/example.md)).
 
 ## What It Provides
 
@@ -89,14 +131,21 @@ Imperial, and a Janissary mass that couldn't out-scale Bombards. Top priority: n
 idle the TC. You already have the speed; add the villagers.
 ```
 
-**2. Habit tracking across games** — *"Feudal-Age upgrades are missing in 7 of the last
-10 games, and 1,500+ wood is floating by Castle in most games. Fixing those two issues
-would clean up the Feudal timing problem."*
+**2. Practice focus workflow** — before running the full report, choose the player being
+coached and let a lightweight model suggest replay-specific habits. Pin the useful ones,
+add custom goals, and the full analysis will explicitly account for those practice goals
+instead of producing a generic post-game review.
 
-**3. Interactive coaching** — `aoe2coach web` opens a browser chat: pick a replay, get the
-report, then ask follow-ups ("why was the fight at 25 minutes so expensive?", "what keeps
-going wrong?") in a real conversation. (Also available keyless inside Claude via MCP — see
-[Other ways to run it](#other-ways-to-run-it).)
+**3. Habit tracking across games** — `aoe2coach trends --last 10` looks for recurring
+patterns: *"Feudal-Age upgrades are missing in 7 of the last 10 games, and 1,500+ wood is
+floating by Castle in most games. Fixing those two issues would clean up the Feudal timing
+problem."*
+
+**4. Interactive coaching** — `aoe2coach web` opens a browser chat: pick a replay, choose
+the player to coach, run the full report, then ask follow-ups ("why was the fight at 25
+minutes so expensive?", "what keeps going wrong?") in a real conversation. An in-progress
+MCP path can also bring replay metrics to compatible assistants — see
+[Other ways to run it](#other-ways-to-run-it).
 
 ## How it works
 
@@ -119,26 +168,14 @@ reference, which keeps the report fast, cheap, and grounded in the replay.
 - **Villager production → idle Town Center detection** — the #1 macro leak ⚡
 - **Build order** — every building, named and timestamped
 - **Army composition & unique-unit usage**, and **named techs/upgrades researched** ⚡
+- **Key tech status** ⚡ — researched vs available-but-missed vs unavailable for common
+  upgrade lines, grounded in the local civ tech tree
 - **Resource float** — banked resources sitting unspent ⚡
 - **Engagement timeline** — when fights happened, losses per side, who won the trade ⚡
 - **EAPM** ⚡, **win/loss, civ, map**, and each player's **real ladder ELO** (by profile ID)
 
 ⚡ = needs the rich parser (older replays; see [below](#which-replays-work)). Current-patch
 games still give ages, build order, civs, and result.
-
-### Bring a Model
-
-The model only sees that small JSON, so any capable model works. Set the provider in `.env`:
-
-| Provider | Set | Notes |
-|---|---|---|
-| **Anthropic** (default) | `ANTHROPIC_API_KEY` | Best on **Claude Opus 4.7** — prompt caching + adaptive thinking |
-| **OpenAI-compatible** | `AOE2COACH_PROVIDER=openai` + `OPENAI_API_KEY` (± `OPENAI_BASE_URL`) | GPT, or **OpenRouter** → any model (Claude/Gemini/…), or a **local** model (Ollama/LM Studio) |
-
-For OpenAI-compatible providers, copy `env.example` to `.env` and set the provider
-variables there.
-
-Prefer no API key at all? Run it from Claude via MCP — see [Other ways to run it](#other-ways-to-run-it).
 
 ## Which replays work
 
@@ -159,37 +196,46 @@ GL.Hera games used for the demos.
 
 ## Under the hood
 
-The interesting engineering (documented in [`CLAUDE.md`](CLAUDE.md)):
+aoe2coach tries to give the model replay evidence that is small enough to reason over, but
+specific enough to stop vague advice:
 
-- **Reverse-engineering an undocumented binary format** that changes every patch, with a
-  **dual-backend** design that auto-picks the rich parser or the current-patch one.
-- **Battle detection from a coarse signal** — aoe2coach infers engagements from object-count
-  drops and keeps that label visible, which helps the coach treat fight data as a strong
-  clue rather than a tactical replay.
-- **Deterministic metrics, prompt caching, provider-agnostic model support, and BYO-key
-  handling** with standard repo hygiene: secrets from env, gitleaks pre-commit, and real
-  replays kept out of git.
-- A weekly GitHub Action keeps the bundled game-data (unit/civ/tech names) current.
+- **Economy rhythm:** villager queue gaps are converted into estimated idle Town Center
+  time, so "make more villagers" is tied to the exact minutes where production slipped.
+- **Age and building tempo:** Feudal/Castle/Imperial timings, first production buildings,
+  and major techs are kept as timestamped events instead of fuzzy opening labels.
+- **Fight pressure:** on rich replays, object-count drops are grouped into engagements with
+  losses per player and a trade result. It is not a tactical replay viewer, but it tells the
+  coach which fights probably decided the game.
+- **Upgrade grounding:** common techs are checked against the local civ tech tree before the
+  model sees them, so unavailable upgrades are marked unavailable and missed upgrades stay
+  separate from researched ones.
+- **Practice focus:** detected and pinned habits are included in the final model request as
+  training priorities, so the report can connect the current replay to what the player is
+  actively trying to improve.
 
 ## Other ways to run it
 
-**MCP (no API key) — chat with replays in Claude.** aoe2coach ships a working MCP server
-for Claude Code / Desktop (`tools`: `list_replays`, `replay_metrics`, `replay_trends`;
-`prompts`: `coach`, `coach_trends`). This path is still being polished, especially setup
-packaging and replay-selection UX. Full setup: **[docs/mcp.md](docs/mcp.md)**.
+**MCP (in progress, no aoe2coach API key) — bring replay metrics to an assistant.**
+aoe2coach ships a working MCP server (`tools`: `list_replays`, `replay_metrics`,
+`replay_trends`; `prompts`: `coach`, `coach_trends`). The server exposes deterministic
+replay data through standard MCP, but setup packaging and replay-selection UX are still
+being polished. Claude Code/Desktop are the currently documented clients. Full setup:
+**[docs/mcp.md](docs/mcp.md)**.
 
 ## Roadmap
 
-- **Player personalization and weak-point targeting** — build player profiles from recent
-  games, then aim reports at the few recurring habits most likely to move that player up.
-- **Trend analysis upgrades** — make `trends --last 10` sharper by grouping mistakes by
-  map, civ, matchup, game phase, and loss pattern.
+- **Player profiles and goal-aware coaching** — build reusable player profiles from recent
+  games, pinned habits, ELO context, civ/map patterns, and recurring weaknesses, then aim
+  each single-game report at the habits most likely to move that player up.
+- **Multi-game trend habit coaching** — make `trends --last 10` sharper by grouping habits
+  by map, civ, matchup, game phase, and loss pattern, then turn that trend summary into
+  coaching analysis and practice goals inside the web workflow.
 - **Latest-patch rich parsing** — close the current AoE2 patch gap by extracting more data
   from `mgz-fast` and routing old/new replays through the right parser automatically.
-- **MCP-first Claude workflow** — polish the Claude Code/Desktop path so players can coach
-  from their Claude subscription, with packaged config snippets and clearer replay UX.
-- **Model choice and cost profiles** — add documented presets for Opus/Sonnet,
-  OpenAI-compatible endpoints, and local models, plus clearer cache/cost reporting.
+- **MCP assistant workflow** — polish the MCP path so players can coach from compatible
+  assistants, with packaged config snippets and clearer replay UX.
+- **Model choice and cost profiles** — add documented presets for flagship, budget,
+  OpenAI-compatible, and local models, plus clearer cache/cost reporting.
 - **Coaching evaluation harness** — maintain a small anonymized replay corpus with expected
   metric snapshots and golden coaching checks, so parser changes and prompt edits can be
   regression-tested.
@@ -202,8 +248,8 @@ packaging and replay-selection UX. Full setup: **[docs/mcp.md](docs/mcp.md)**.
 
 ## Limitations
 
-- The rich parser currently covers replays from before the February 2026 AoE2 patch; newer
-  ladder games use the lighter parser.
+- The rich parser currently covers replays from before the February 2026 Last Chieftains
+  update; newer ladder games use the lighter parser.
 - Engagement analysis is intentionally coarse today. Rich parsing provides build/research/unit
   inputs, map data, starting objects, command positions, and object/resource time series.
   aoe2coach uses drops in those timelines to mark costly fights and the side that bled more
@@ -215,7 +261,7 @@ packaging and replay-selection UX. Full setup: **[docs/mcp.md](docs/mcp.md)**.
 Built on [**mgz**](https://github.com/happyleavesaoc/aoc-mgz) and the
 [**AoEInsights `mgz-fast`** fork](https://github.com/AoEInsights/aoc-mgz) (replay parsing),
 the [**SiegeEngineers aoe2techtree**](https://github.com/SiegeEngineers/aoe2techtree)
-dataset (game-data names), and [Claude](https://www.anthropic.com/claude) for the coaching.
+dataset (game-data names), and bring-your-own model providers for the coaching.
 
 ## License
 

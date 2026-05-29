@@ -5,8 +5,10 @@ Thanks for helping out! This project turns AoE2 DE replays into AI coaching.
 ## Setup
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[full,dev,viz,web]"   # full backend + tools (or [fast] for current-patch games)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e ".[full,dev,viz,web]"   # full backend + tools (or [fast])
 pre-commit install                      # gitleaks + ruff on commit
 ```
 
@@ -20,7 +22,7 @@ ruff check src tests && ruff format src tests
 pytest
 ```
 
-- Keep deterministic logic (timings, counts, battle detection) in `metrics.py` — Claude
+- Keep deterministic logic (timings, counts, battle detection) in `metrics.py` — the model
   coaches on numbers, it doesn't compute them.
 - Never commit real replays (they hold player PII) or secrets. The pre-commit hooks
   guard both; `.gitignore` blocks `*.aoe2record` except the test fixtures path.
