@@ -84,7 +84,7 @@ def load_config(require_key: bool = True) -> Config:
         effort = effort_override or defaults["effort"]
         if effort not in defaults["efforts"]:
             raise ConfigError(
-                "AOE2COACH_EFFORT for Anthropic must be one of: " "low, medium, high, xhigh, max."
+                "AOE2COACH_EFFORT for Anthropic must be one of: low, medium, high, xhigh, max."
             )
         key_hint = (
             "ANTHROPIC_API_KEY is not set.\n"
@@ -99,7 +99,7 @@ def load_config(require_key: bool = True) -> Config:
         effort = effort_override or defaults["effort"]
         if effort not in defaults["efforts"]:
             raise ConfigError(
-                "AOE2COACH_EFFORT for OpenAI must be one of: " "none, low, medium, high, xhigh."
+                "AOE2COACH_EFFORT for OpenAI must be one of: none, low, medium, high, xhigh."
             )
         if not model and not base_url:
             model = defaults["analysis_model"]

@@ -83,7 +83,7 @@ def _build_comparisons(metrics: ReplayMetrics) -> str:
         blocks.append(f"**{p.name}: early timing checks**")
         for c in rows[:4]:
             blocks.append(
-                f"- {c['checkpoint']}: {c['actual']} vs target {c['target']} " f"({c['status']})"
+                f"- {c['checkpoint']}: {c['actual']} vs target {c['target']} ({c['status']})"
             )
         blocks.append("")
     if not blocks:
