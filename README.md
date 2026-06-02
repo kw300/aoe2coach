@@ -32,9 +32,7 @@ suggestions, pin the habits worth practicing, and run the full analysis when rea
   <a href="https://www.youtube.com/watch?v=T3ZhmVcX3Vw"><img alt="Play the Hera vs Sora Kuma match VOD on YouTube" src="docs/assets/youtube-card.jpg" width="640"></a>
 </p>
 
-
-https://github.com/user-attachments/assets/b1db97dc-5612-47c2-9f5c-b35603a8ce04
-
+https://github.com/user-attachments/assets/709add66-b88c-48c4-aae0-0881067ca380
 
 [Read the sample aoe2coach chat on this game.](reports/example.md)
 
