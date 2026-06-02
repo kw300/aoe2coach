@@ -17,6 +17,7 @@ def _game(feudal_ms, idle_ms_list, result_winner, *, civ=43, opp_civ=10, map_nam
         civ_name(civ),
         1001,
         0,
+        None,
         1,
         age_up_ms={"feudal": feudal_ms} if feudal_ms else {},
         winner=result_winner,
@@ -29,6 +30,7 @@ def _game(feudal_ms, idle_ms_list, result_winner, *, civ=43, opp_civ=10, map_nam
         civ_name(opp_civ),
         1002,
         1,
+        None,
         2,
         winner=(not result_winner) if result_winner is not None else None,
     )

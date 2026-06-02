@@ -12,7 +12,8 @@ army choices, upgrades, and the fights that swung the game.
 The replay stays in the conversation. Follow-ups can dig into units, battles, economy,
 market use, civ bonuses, or recurring habits across recent games without starting over.
 The web workflow is built around practice focus: detect likely habits from the replay, pin
-the ones worth training, and carry those goals into the full coaching report.
+the ones worth training, carry those goals into the full coaching report, and export the
+whole session when you want a portable Markdown record of the replay discussion.
 
 **Best results currently come from replays recorded before the February 2026 Last Chieftains
 update.** The full parser exposes villager queues, EAPM, map data, commands, and richer
@@ -32,9 +33,8 @@ suggestions, pin the habits worth practicing, and run the full analysis when rea
   <a href="https://www.youtube.com/watch?v=T3ZhmVcX3Vw"><img alt="Play the Hera vs Sora Kuma match VOD on YouTube" src="docs/assets/youtube-card.jpg" width="640"></a>
 </p>
 
-https://github.com/user-attachments/assets/709add66-b88c-48c4-aae0-0881067ca380
 
-[Read the sample aoe2coach chat on this game.](reports/example.md)
+<video src="https://github.com/user-attachments/assets/709add66-b88c-48c4-aae0-0881067ca380" controls width="720"></video>
 
 ---
 
@@ -103,7 +103,8 @@ fundamentals, and a readable timeline. Choose the player to coach, review the li
 practice-focus suggestions, pin any habits worth tracking, add custom habits if desired,
 then run the full analysis using the flagship model. Pinned and detected habits are passed into
 the report so the coach can connect the replay evidence to the player's current training
-goals.
+goals. Use **Export session** to save the current preview, habits, timeline, and chat as a
+Markdown file under `reports/session-exports/` and download a copy from the browser.
 
 Prefer the terminal? The CLI does the same, scriptably:
 
@@ -117,7 +118,7 @@ aoe2coach minimap latest        # map PNG
 
 Bring an API key. Cost depends on the model and provider: aoe2coach can use a cheaper
 model for practice-focus detection and a flagship model for the final coaching report.
-Saved reports land in `reports/` ([see a sample](reports/example.md)).
+Saved reports land in `reports/` ([Read a sample aoe2coach chat](reports/session-exports/aoc-mgz-de-66.6-2026-06-02-10-13-30.md)).
 
 ## What It Provides
 
@@ -145,6 +146,10 @@ minutes so expensive?", "what keeps going wrong?") in a real conversation. An in
 MCP path can also bring replay metrics to compatible assistants — see
 [Other ways to run it](#other-ways-to-run-it).
 
+**5. Session export** — the web UI can export the current replay preview, practice-focus
+habits, fundamentals, timeline, and chat transcript as Markdown, then save it locally and
+download a browser copy.
+
 ## How it works
 
 The core idea: **do the exact, boring stuff in code; let the model do the judgment.**
@@ -171,6 +176,8 @@ reference, which keeps the report fast, cheap, and grounded in the replay.
 - **Resource float** — banked resources sitting unspent ⚡
 - **Engagement timeline** — when fights happened, losses per side, who won the trade ⚡
 - **EAPM** ⚡, **win/loss, civ, map**, and each player's **real ladder ELO** (by profile ID)
+- **Player colors** normalized from parser-provided color labels when available, so UI
+  highlights, minimap markers, and model context agree across replay versions.
 
 ⚡ = needs the rich parser (older replays; see [below](#which-replays-work)). Current-patch
 games still give ages, build order, civs, and result.
@@ -210,6 +217,9 @@ specific enough to stop vague advice:
 - **Practice focus:** detected and pinned habits are included in the final model request as
   training priorities, so the report can connect the current replay to what the player is
   actively trying to improve.
+- **Player colors:** color labels from the parser are normalized before metrics reach the
+  web UI or model, with raw color IDs used only as a fallback. This avoids off-by-one
+  palette mistakes across replay/parser versions.
 
 ## Other ways to run it
 

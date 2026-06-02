@@ -35,6 +35,7 @@ def _player(number: int, name: str, civ_id: int, civilization: str) -> PlayerRep
         civilization=civilization,
         profile_id=1000 + number,
         color_id=number - 1,
+        color_name=None,
         team_id=number,
     )
 

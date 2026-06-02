@@ -19,6 +19,7 @@ from pathlib import Path
 from . import build_metrics, parse_replay
 from .coach import CoachChat, build_opening_message, detect_habits
 from .config import ConfigError
+from .playercolors import color_hex, color_hex_from_name, color_name
 
 try:
     from flask import Flask, render_template_string, request, send_file
@@ -30,17 +31,6 @@ _SESSIONS: dict[str, CoachChat] = {}
 _UPLOAD_DIR = Path(tempfile.gettempdir()) / "aoe2coach-uploads"
 _MAX_HABITS = 12
 _MAX_HABIT_LEN = 160
-_PLAYER_COLORS = [
-    "#3c6eff",
-    "#e63232",
-    "#3cc83c",
-    "#f0e63c",
-    "#28c8e6",
-    "#f082e6",
-    "#828282",
-    "#f58c28",
-]
-
 
 def _date_label(value: str | None) -> str | None:
     if not value:
@@ -53,9 +43,11 @@ def _date_label(value: str | None) -> str | None:
 
 
 def _player_color(color_id: int | None) -> str | None:
-    if color_id is None or color_id < 0:
-        return None
-    return _PLAYER_COLORS[color_id % len(_PLAYER_COLORS)]
+    return color_hex(color_id)
+
+
+def _player_color_value(color_name_value: str | None, color_id: int | None) -> str | None:
+    return color_hex_from_name(color_name_value) or _player_color(color_id)
 
 
 def _fmt_time(seconds: int | None) -> str:
@@ -127,7 +119,10 @@ def _comparison(metrics, elo: dict | None) -> dict:
             "name": p.name,
             "civilization": p.civilization,
             "rating": ratings[idx],
-            "color": _player_color(getattr(p, "color_id", None)),
+            "color": _player_color_value(
+                getattr(p, "color_name", None), getattr(p, "color_id", None)
+            ),
+            "color_name": getattr(p, "color_name", None) or color_name(getattr(p, "color_id", None)),
         }
         for idx, p in enumerate(players)
     ]
@@ -248,7 +243,8 @@ def _web_preview(metrics) -> dict:
                 "name": p.name,
                 "civilization": p.civilization,
                 "color_id": p.color_id,
-                "color": _player_color(p.color_id),
+                "color": _player_color_value(getattr(p, "color_name", None), p.color_id),
+                "color_name": getattr(p, "color_name", None) or color_name(p.color_id),
                 "team_id": p.team_id,
                 "profile_id": p.profile_id,
                 "result": p.result,
@@ -295,6 +291,27 @@ def _clean_habits(raw) -> list[str]:
         if len(habits) >= _MAX_HABITS:
             break
     return habits
+
+
+def _export_session(body: dict) -> dict:
+    markdown = str(body.get("markdown", "")).strip()
+    if not markdown:
+        return {"error": "No session content to export."}
+    raw_name = str(body.get("filename", "")).strip() or "aoe2coach-session.md"
+    name = secure_filename(raw_name) or "aoe2coach-session.md"
+    if not name.lower().endswith(".md"):
+        name += ".md"
+    out_dir = Path.cwd() / "reports" / "session-exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / name
+    if out.exists():
+        stem, suffix = out.stem, out.suffix
+        idx = 2
+        while out.exists():
+            out = out_dir / f"{stem}-{idx}{suffix}"
+            idx += 1
+    out.write_text(markdown + "\n", encoding="utf-8")
+    return {"path": str(out), "name": out.name}
 
 
 def _practice_focus_block(habits: list[str], detected_habits: list[str] | None = None) -> str:
@@ -418,6 +435,8 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>aoe2coach</ti
  .habit .detail{font-size:.74rem;color:#9aa4b2;margin-top:.25rem}
  .habit .actions{display:flex;gap:.35rem;margin-top:.45rem}
  .empty{font-size:.8rem;color:#9aa4b2;border:1px dashed #3a4150;border-radius:8px;padding:.7rem}
+ .practiceHead{display:flex;align-items:center;justify-content:space-between;gap:.6rem;margin:.2rem 0 .8rem}
+ .practiceHead h1{margin:0}
  @media(max-width:900px){ #practice{display:none}.resize-h.right{display:none}#side{width:260px} }
 </style></head><body>
 <div id="side">
@@ -433,7 +452,7 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>aoe2coach</ti
 </div>
 <div class="resize-h right" id="rightResize" title="Resize practice panel"></div>
 <div id="practice">
-  <h1>Practice Focus</h1>
+  <div class="practiceHead"><h1>Practice Focus</h1><button class="miniBtn" id="exportSession" disabled>Export session</button></div>
   <div id="practiceBody"></div>
 </div>
 <script>
@@ -441,11 +460,16 @@ let current=null, currentInsights=null, currentInsightsPath=null, currentPreview
 let detectedLoading=false, detectedError='', detectedModel='', detectedFocus=null, detectRequestId=0, analyzing=false;
 const side=document.getElementById('side'), list=document.getElementById('list'), leftResize=document.getElementById('leftResize'), rightResize=document.getElementById('rightResize');
 const log=document.getElementById('log'), q=document.getElementById('q'), send=document.getElementById('send'), insights=document.getElementById('insights');
-const practice=document.getElementById('practice'), practiceBody=document.getElementById('practiceBody');
+const practice=document.getElementById('practice'), practiceBody=document.getElementById('practiceBody'), exportSession=document.getElementById('exportSession');
 const HABIT_STORE='aoe2coach.practiceFocus.v1';
 function md(t){ try{return marked.parse(t);}catch(e){return esc(t);} }
 function esc(t){ return String(t??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function add(role, text, isHtml){ const d=document.createElement('div'); d.className='msg '+role; d.innerHTML=isHtml?text:md(text); log.appendChild(d); log.scrollTop=log.scrollHeight; return d; }
+let conversationLog=[];
+function add(role, text, isHtml, exportText){
+  const d=document.createElement('div'); d.className='msg '+role; d.innerHTML=isHtml?text:md(text); log.appendChild(d); log.scrollTop=log.scrollHeight;
+  if(exportText!==false && !String(role).includes('muted')) conversationLog.push({role:String(role).includes('you')?'You':'Coach', text:String(exportText??text??'')});
+  return d;
+}
 function busy(b){ send.disabled=b||!sessionOpen; q.disabled=b||!sessionOpen; }
 async function postJSON(url, body){ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); return r.json(); }
 function activate(el){ document.querySelectorAll('.rep').forEach(x=>x.classList.remove('active')); if(el) el.classList.add('active'); }
@@ -508,6 +532,7 @@ function syncFocusButtons(){
   });
 }
 function renderPractice(){
+  if(exportSession) exportSession.disabled=!hasExportableSession();
   const selected=currentFocus?`<div class="habit"><strong>Selected: ${colorizePlayers(currentFocus,comparisonPlayers())}</strong><div class="detail">${detectedLoading?'Detecting habits first…':'Review or pin habits, then run full analysis using the flagship model.'}</div><div class="actions"><button class="miniBtn primary" data-analyze ${detectedLoading||analyzing?'disabled':''}>${analyzing?'Analyzing…':'Run full analysis using flagship model'}</button></div></div>`:'';
   const pinned=pinnedHabits.length?pinnedHabits.map((h,i)=>`<div class="habit"><strong>${esc(h)}</strong><div class="actions"><button class="miniBtn" data-remove="${i}">Remove</button></div></div>`).join(''):'<div class="empty">Add 1-3 habits you want the coach to watch for, or pin detected habits after opening a replay.</div>';
   let detected='';
@@ -587,10 +612,130 @@ function previewHtml(preview){
   }).join('');
   return `<div class="previewHead">${esc(map||'Unknown map')}${date} · ${esc(preview.duration_label)} · ${rated} · parser: ${esc(preview.backend)}</div><div class="muted">No flagship-model call yet. Pick a player to run lightweight habit detection first.</div><div class="playerGrid">${players}</div>`;
 }
+function mdClean(value){ return String(value??'—').replace(/\\r\\n/g,'\\n').replace(/[|]/g,'/').trim()||'—'; }
+function bulletList(values){ return values.length?values.map(v=>`- ${mdClean(v)}`).join('\\n'):'- None'; }
+function activeReplayName(){
+  return document.querySelector('.rep.active')?.textContent?.trim() || (currentPreview&&currentPreview.source_file) || (current?String(current).split(/[\\\\/]/).pop():'aoe2coach-session');
+}
+function previewMarkdown(preview){
+  if(!preview) return '';
+  const players=(preview.players||[]).map(p=>`- ${mdClean(p.name)} (${mdClean(p.civilization)}): ${mdClean(p.result)}; Feudal ${mdClean(p.feudal)}, Castle ${mdClean(p.castle)}, Imperial ${mdClean(p.imperial)}`).join('\\n')||'- None';
+  return [
+    '## Replay',
+    `- File: ${mdClean(preview.source_file||current)}`,
+    `- Map: ${mdClean([preview.map_name,preview.map_size].filter(Boolean).join(' / '))}`,
+    `- Duration: ${mdClean(preview.duration_label)}`,
+    `- Recorded: ${mdClean(preview.recorded_at_label||preview.recorded_at)}`,
+    `- Rated: ${preview.rated?'yes':'no'}`,
+    `- Parser: ${mdClean(preview.backend)}${preview.body_complete===false?' (partial body scan)':''}`,
+    '',
+    '## Players',
+    players,
+  ].join('\\n');
+}
+function habitsMarkdown(){
+  const detected=detectedHabits();
+  const detectedLines=detected.length?detected.map(h=>`- ${mdClean(h.label)}${h.player?` (${mdClean(h.player)})`:''}${h.priority?` [${mdClean(h.priority)}]`:''}${h.detail?`: ${mdClean(h.detail)}`:''}`):[];
+  return [
+    '## Practice Focus',
+    `- Selected player: ${mdClean(currentFocus||'None')}`,
+    '',
+    '### Pinned Habits',
+    bulletList(practiceHabits()),
+    '',
+    '### Detected Habits',
+    bulletList(detectedLines.map(x=>x.slice(2))),
+  ].join('\\n');
+}
+function insightsMarkdown(){
+  const data=currentInsights||{};
+  const compare=(data.comparison||{}), players=compare.players||[], rows=compare.rows||[];
+  const out=['## Replay Context'];
+  if(players.length&&rows.length){
+    out.push('', '### Fundamentals');
+    out.push(`| Metric | ${players.map(p=>mdClean(p.name)).join(' | ')} |`);
+    out.push(`| --- | ${players.map(()=> '---').join(' | ')} |`);
+    rows.forEach(r=>out.push(`| ${mdClean(r.metric)} | ${(r.values||[]).map(mdClean).join(' | ')} |`));
+  }
+  const events=data.timeline||[];
+  out.push('', '### Timeline');
+  if(events.length) events.forEach(e=>out.push(`- ${mdClean(e.at)} [${mdClean(timelineTag(e.type))}] ${mdClean(e.label)}`));
+  else out.push('- None');
+  return out.join('\\n');
+}
+function discussionMarkdown(){
+  const rows=conversationLog.filter(row=>row.text.trim());
+  if(!rows.length){
+    const visible=(log?.innerText||'').trim();
+    return visible?'## Discussion\\n\\n'+visible:'## Discussion\\n- No discussion yet.';
+  }
+  return '## Discussion\\n\\n'+rows.map(row=>`### ${row.role}\\n\\n${row.text.trim()}`).join('\\n\\n');
+}
+function visibleFallbackMarkdown(){
+  return [
+    '# aoe2coach Session Export',
+    `Exported: ${new Date().toLocaleString()}`,
+    `Replay: ${mdClean(activeReplayName())}`,
+    '',
+    '## Discussion',
+    mdClean(log?.innerText||'No discussion yet.'),
+    '',
+    '## Replay Context',
+    mdClean(insights?.innerText||'None'),
+    '',
+    '## Practice Focus',
+    mdClean(practice?.innerText||'None'),
+    '',
+  ].join('\\n');
+}
+function exportFilename(){
+  const base=activeReplayName().split(/[\\\\/]/).pop().replace(/\\.aoe2record$/i,'');
+  const stamp=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+  return `${base||'aoe2coach-session'}-${stamp}.md`;
+}
+function exportMarkdown(){
+  if(!currentPreview&&!currentInsights&&!conversationLog.length) return visibleFallbackMarkdown();
+  return [
+    '# aoe2coach Session Export',
+    `Exported: ${new Date().toLocaleString()}`,
+    '',
+    previewMarkdown(currentPreview),
+    '',
+    habitsMarkdown(),
+    '',
+    insightsMarkdown(),
+    '',
+    discussionMarkdown(),
+    '',
+  ].join('\\n');
+}
+function downloadText(filename,text){
+  const blob=new Blob([text],{type:'text/markdown;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function hasExportableSession(){
+  const visible=(log?.innerText||'').trim();
+  const initial=visible.startsWith('Drag in a replay or pick one on the left.');
+  return !!(current||currentPreview||currentInsights||conversationLog.length||document.querySelector('.rep.active')||(visible&&!initial));
+}
+async function exportCurrentSession(){
+  if(!hasExportableSession()) return;
+  const filename=exportFilename();
+  const markdown=exportMarkdown();
+  let saved='';
+  try{
+    const res=await postJSON('/api/export-session',{filename,markdown});
+    if(res&&res.path) saved=res.path;
+  }catch(e){ saved=''; }
+  downloadText(filename,markdown);
+  add('coach muted',saved?`Exported session. Saved to ${saved}`:'Exported session download.',false,false);
+}
 function showPreview(res){
   sessionOpen=false; currentFocus=null;
   if(res.error){ add('coach err','⚠️ '+res.error); current=null; currentPreview=null; q.placeholder='Pick a replay first…'; renderInsights(null,null); busy(false); return; }
-  currentPreview=res.preview; add('coach', previewHtml(res.preview), true); q.placeholder='Choose a player to detect habits…'; renderInsights(res.insights,current); busy(false);
+  currentPreview=res.preview; add('coach', previewHtml(res.preview), true, false); q.placeholder='Choose a player to detect habits…'; renderInsights(res.insights,current); busy(false);
 }
 function showReport(res){
   if(res.error){ add('coach err','⚠️ '+res.error); sessionOpen=false; q.placeholder='Choose a player to start coaching…'; }
@@ -603,18 +748,20 @@ async function selectFocusPlayer(focusPlayer){
 async function startCoaching(){
   if(!current||!currentFocus||analyzing) return;
   sessionOpen=false; analyzing=true; busy(true); renderPractice();
-  const wait=add('coach muted',`Running full analysis for ${currentFocus} using the flagship model… (~10–20s)`);
+  const wait=add('coach muted',`Running full analysis for ${currentFocus} using the flagship model… (~10–20s)`, false, false);
   const res=await postJSON('/api/open',{replay:current,focus_player:currentFocus,habits:practiceHabits(),detected_habits:detectedHabitLabels()});
   wait.remove(); analyzing=false; showReport(res); renderPractice();
 }
 async function openReplay(el){ activate(el); current=el.dataset.path; currentPreview=null; sessionOpen=false; log.innerHTML=''; insights.innerHTML=''; q.value=''; busy(true);
+  conversationLog=[];
   currentInsights=null; currentInsightsPath=null; currentFocus=null; detectedLoading=false; detectedError=''; detectedModel=''; detectedFocus=null; renderPractice();
-  const wait=add('coach muted','Reading replay facts…'); const res=await postJSON('/api/preview',{replay:current}); wait.remove(); showPreview(res); }
+  const wait=add('coach muted','Reading replay facts…', false, false); const res=await postJSON('/api/preview',{replay:current}); wait.remove(); showPreview(res); }
 function wire(el){ el.onclick=()=>openReplay(el); }
 document.querySelectorAll('.rep').forEach(wire);
 async function upload(file){ current=null; currentPreview=null; sessionOpen=false; log.innerHTML=''; insights.innerHTML=''; q.value=''; busy(true);
+  conversationLog=[];
   currentInsights=null; currentInsightsPath=null; currentFocus=null; detectedLoading=false; detectedError=''; detectedModel=''; detectedFocus=null; renderPractice();
-  const wait=add('coach muted','Uploading & previewing '+file.name+'…'); const fd=new FormData(); fd.append('file',file); fd.append('habits',JSON.stringify(practiceHabits()));
+  const wait=add('coach muted','Uploading & previewing '+file.name+'…', false, false); const fd=new FormData(); fd.append('file',file); fd.append('habits',JSON.stringify(practiceHabits()));
   const res=await (await fetch('/api/upload',{method:'POST',body:fd})).json(); wait.remove();
   if(res.path){ const b=document.createElement('button'); b.className='rep'; b.dataset.path=res.path; b.textContent=res.name; wire(b); list.insertBefore(b,list.firstChild); activate(b); current=res.path; }
   showPreview(res); }
@@ -622,9 +769,10 @@ async function upload(file){ current=null; currentPreview=null; sessionOpen=fals
 ['dragleave','drop'].forEach(ev=>side.addEventListener(ev,e=>{e.preventDefault();side.classList.remove('drag');}));
 side.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(!f) return; if(f.name.toLowerCase().endsWith('.aoe2record')) upload(f); else add('coach err','⚠️ That is not a .aoe2record file.'); });
 async function ask(){ const m=q.value.trim(); if(!m||!current||!sessionOpen) return; add('you', m); q.value=''; busy(true);
-  const wait=add('coach muted','…'); const res=await postJSON('/api/chat',{replay:current,message:m,habits:practiceHabits(),detected_habits:detectedHabitLabels()}); wait.remove();
+  const wait=add('coach muted','…', false, false); const res=await postJSON('/api/chat',{replay:current,message:m,habits:practiceHabits(),detected_habits:detectedHabitLabels()}); wait.remove();
   add(res.error?'coach err':'coach', res.error?('⚠️ '+res.error):res.reply); busy(false); q.focus(); }
 send.onclick=ask; q.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask();} });
+exportSession.onclick=exportCurrentSession;
 log.addEventListener('click',e=>{ const btn=e.target.closest('[data-focus]'); if(btn) selectFocusPlayer(btn.dataset.focus); });
 q.addEventListener('input',()=>{ q.style.height='auto'; q.style.height=Math.min(q.scrollHeight,180)+'px'; });
 practice.addEventListener('click',e=>{
@@ -698,6 +846,10 @@ def create_app() -> Flask:
         except json.JSONDecodeError:
             habits = []
         return {**_preview_replay(str(dest)), "path": str(dest), "name": name, "habits": habits}
+
+    @app.route("/api/export-session", methods=["POST"])
+    def api_export_session():
+        return _export_session(request.json or {})
 
     @app.route("/api/minimap")
     def api_minimap():

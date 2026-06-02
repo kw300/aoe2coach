@@ -26,6 +26,9 @@ def test_index_lists_replays_and_dropzone(monkeypatch):
     assert b'data-vresize-key="list"' in r.data
     assert b"Detected</h2>" in r.data
     assert b"Run full analysis" in r.data
+    assert b"Export session" in r.data
+    assert b"id=\"exportSession\"" in r.data
+    assert b"replace(/\\r\\n/g,'\\n')" in r.data
     assert b"flagship model" in r.data
     assert b"Opus" not in r.data
     assert b"Sonnet" not in r.data
@@ -56,6 +59,18 @@ def test_upload_without_file_is_graceful():
     client = webapp.create_app().test_client()
     r = client.post("/api/upload", data={})
     assert r.get_json()["error"] == "No file uploaded."
+
+
+def test_export_session_saves_markdown(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    client = webapp.create_app().test_client()
+    r = client.post(
+        "/api/export-session",
+        json={"filename": "My Game.md", "markdown": "# Session\n\nHello"},
+    )
+    out = tmp_path / "reports" / "session-exports" / "My_Game.md"
+    assert r.get_json()["path"] == str(out)
+    assert out.read_text(encoding="utf-8") == "# Session\n\nHello\n"
 
 
 def test_minimap_without_replay_is_graceful():
@@ -186,6 +201,9 @@ def test_date_label_handles_missing_and_iso_values():
 def test_player_color_maps_replay_color_id():
     assert webapp._player_color(0) == "#3c6eff"
     assert webapp._player_color(1) == "#e63232"
+    assert webapp._player_color(4) == "#28c8e6"
+    assert webapp._player_color_value("Blue", 1) == "#3c6eff"
+    assert webapp._player_color_value("Teal", 4) == "#28c8e6"
     assert webapp._player_color(None) is None
 
 

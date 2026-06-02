@@ -15,14 +15,17 @@
 
 # --- Generated coaching reports (keep the committed examples) ---
 reports/*
-!reports/example.md
-!reports/example.minimap.png
+!reports/session-exports/
+reports/session-exports/*
+!reports/session-exports/aoc-mgz-de-66.6-2026-06-02-10-13-30.md
 *.coach.md
 *.minimap.png
-!reports/example.minimap.png
 
 # --- Local media exports ---
 docs/assets/*.mp4
+docs/assets/caption-review/
+docs/assets/*caption-table.md
+docs/assets/*caption-review.jpg
 
 # --- Python ---
 __pycache__/

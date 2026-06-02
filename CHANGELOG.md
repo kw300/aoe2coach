@@ -30,6 +30,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project aims to fol
   civ tech tree before the model sees the replay.
 - **Improved minimap rendering.** Minimap output handles missing object names more
   gracefully and uses clearer player markers.
+- **Session export.** The web UI can export the current replay preview, practice-focus
+  habits, fundamentals, timeline, and chat transcript as Markdown, saving a local copy
+  under `reports/session-exports/` while also downloading one in the browser.
+- **Sample exported session.** README now links to a committed Markdown session export as
+  the public sample report.
 
 ### Changed
 - **Provider-neutral docs, metadata, and UI.** Public copy now frames configuration and full
@@ -45,6 +50,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project aims to fol
 - **Full-analysis flow.** Player selection now runs lightweight habit detection first; the
   full report is launched explicitly afterward with pinned and detected habits included in
   the model request.
+- **Demo video.** README now embeds the updated uploaded demo video asset.
 
 ### Fixed
 - **Idle-TC estimation.** Villager-production gaps now account for age-up research time and
@@ -52,6 +58,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project aims to fol
 - **Detected habits persistence.** Lightweight detected habits no longer disappear when the
   full report refreshes replay insights.
 - **Minimap sizing.** The minimap fits its resizable box without an internal scrollbar.
+- **Player color normalization.** Full-parser color labels are normalized before metrics
+  reach the web UI, minimap, or model context, with raw color IDs used only as a fallback.
+  This fixes off-by-one palette mistakes across replay/parser versions.
 
 ### Work in progress
 - **MCP workflow polish.** The MCP server is available and usable, but client setup,

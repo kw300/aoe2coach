@@ -15,18 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import civdata
-
-# Player slot colours (DE palette order), for the start markers.
-_PLAYER_COLORS = [
-    (60, 110, 255),
-    (230, 50, 50),
-    (60, 200, 60),
-    (240, 230, 60),
-    (40, 200, 230),
-    (240, 130, 230),
-    (130, 130, 130),
-    (245, 140, 40),
-]
+from .playercolors import color_rgb, color_rgb_from_name
 
 _RESOURCE_COLORS = {
     "gold": (245, 196, 66),
@@ -178,7 +167,8 @@ def render_minimap(
         tc_seen: dict[int, int] = {}
         for p, _obj, (x, y) in town_centers:
             cx, cy = int(x * scale), int(y * scale)
-            color = _PLAYER_COLORS[(p.color_id or 0) % len(_PLAYER_COLORS)]
+            color = color_rgb_from_name(getattr(p, "color", None)) or color_rgb(p.color_id)
+            color = color or (255, 255, 255)
             r = max(5, scale + 2)
             _draw_dot(draw, cx, cy, r, color, outline=(255, 255, 255))
             number = getattr(p, "number", 0) or 0

@@ -20,6 +20,7 @@ def _player(number, name, civ_id, **kw):
         civilization=civ_name(civ_id),
         profile_id=kw.get("profile_id", 1000 + number),
         color_id=kw.get("color_id", number - 1),
+        color_name=kw.get("color_name"),
         team_id=kw.get("team_id", 1),
         age_up_ms=kw.get("age_up_ms", {}),
         age_research_ms=kw.get("age_research_ms", {}),
@@ -80,6 +81,7 @@ def test_age_durations_and_apm():
     assert p.feudal_to_castle_s == 300
     assert p.castle_to_imperial_s == 900
     assert p.command_actions_per_min == 30.0
+    assert p.color_name == "blue"
 
 
 def test_result_from_winner_flag_full_backend():

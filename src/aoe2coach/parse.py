@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import civdata
+from .playercolors import color_name, color_name_from_label
 
 # AoE2 research tech IDs that correspond to advancing an age (fast backend).
 _AGE_TECH = {101: "feudal", 102: "castle", 103: "imperial"}
@@ -40,6 +41,7 @@ class PlayerReplay:
     civilization: str
     profile_id: int | None
     color_id: int | None
+    color_name: str | None
     team_id: int | None
 
     # Common (both backends, best-effort)
@@ -200,6 +202,7 @@ def _parse_full(path: Path) -> ParsedReplay:
             ),
             profile_id=p.profile_id,
             color_id=p.color_id,
+            color_name=color_name_from_label(getattr(p, "color", None)) or color_name(p.color_id),
             team_id=p.team_id,
             winner=getattr(p, "winner", None),
             eapm=getattr(p, "eapm", None),
@@ -336,6 +339,7 @@ def _build_players_fast(raw_players: list[dict]) -> list[PlayerReplay]:
                 civilization=civdata.civ_name(civ_id),
                 profile_id=p.get("profile_id"),
                 color_id=p.get("color_id"),
+                color_name=color_name(p.get("color_id")),
                 team_id=p.get("team_id"),
             )
         )

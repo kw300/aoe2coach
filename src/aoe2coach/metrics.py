@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 
 from . import civdata
 from .parse import ParsedReplay, PlayerReplay, _fmt_ms
+from .playercolors import color_name as color_name_from_id
 
 # A Town Center pumps a villager about every 25s. A gap materially larger than that
 # (before the boom ends) means the TC sat idle — the #1 sub-expert mistake.
@@ -130,6 +131,7 @@ class PlayerMetrics:
     name: str
     civilization: str
     color_id: int | None
+    color_name: str | None
     team_id: int | None
     profile_id: int | None
     result: str  # "won" | "lost" | "unknown"
@@ -811,6 +813,7 @@ def build_metrics(parsed: ParsedReplay) -> ReplayMetrics:
             name=p.name,
             civilization=p.civilization,
             color_id=p.color_id,
+            color_name=p.color_name or color_name_from_id(p.color_id),
             team_id=p.team_id,
             profile_id=p.profile_id,
             result=_result(p, parsed.players),
