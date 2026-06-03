@@ -27,7 +27,7 @@ def test_index_lists_replays_and_dropzone(monkeypatch):
     assert b"Detected</h2>" in r.data
     assert b"Run full analysis" in r.data
     assert b"Export session" in r.data
-    assert b"id=\"exportSession\"" in r.data
+    assert b'id="exportSession"' in r.data
     assert b"replace(/\\r\\n/g,'\\n')" in r.data
     assert b"flagship model" in r.data
     assert b"Opus" not in r.data

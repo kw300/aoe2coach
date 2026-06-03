@@ -32,6 +32,7 @@ _UPLOAD_DIR = Path(tempfile.gettempdir()) / "aoe2coach-uploads"
 _MAX_HABITS = 12
 _MAX_HABIT_LEN = 160
 
+
 def _date_label(value: str | None) -> str | None:
     if not value:
         return None
@@ -122,7 +123,8 @@ def _comparison(metrics, elo: dict | None) -> dict:
             "color": _player_color_value(
                 getattr(p, "color_name", None), getattr(p, "color_id", None)
             ),
-            "color_name": getattr(p, "color_name", None) or color_name(getattr(p, "color_id", None)),
+            "color_name": getattr(p, "color_name", None)
+            or color_name(getattr(p, "color_id", None)),
         }
         for idx, p in enumerate(players)
     ]
