@@ -1,11 +1,9 @@
 name: Update game data
 
-# Keeps the bundled name/terrain tables current with new patches/DLCs. Runs weekly
-# (and on demand), regenerates the data from mgz.reference + aoe2techtree, and opens a
-# PR only when something actually changed.
+# Keeps the bundled name/terrain tables current with new patches/DLCs. Run manually
+# when needed; the scheduled PR bot is disabled until repository PR permissions and
+# review flow are sorted out.
 on:
-  schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
 
 permissions:
