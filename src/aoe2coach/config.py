@@ -1,29 +1,22 @@
-"""Configuration, model provider selection, and API-key handling.
+"""Environment-only model connections with optional overrides for each coaching task.
 
-aoe2coach is **bring-your-own-model**. Two first-class hosted provider paths:
-
-- ``anthropic`` (default) — the native Anthropic SDK, with prompt caching and adaptive
-  thinking.
-- ``openai`` — the OpenAI SDK. Without ``OPENAI_BASE_URL`` this uses OpenAI's hosted API
-  and supplies smart defaults; with ``OPENAI_BASE_URL`` it can target OpenRouter or local
-  servers, but the model id must match that endpoint.
-
-Best-practice key handling, enforced here:
-- Keys come from environment variables only — never hard-coded, never defaulted.
-- A local ``.env`` (gitignored) is loaded for convenience.
-- Missing/invalid config fails fast with a clear, actionable message — and the key is
-  never logged or echoed.
+Hosted Anthropic and OpenAI have provider-specific defaults. Custom endpoints need
+endpoint-specific model IDs. Existing ``.env`` files keep working; task overrides
+use ``AOE2COACH_<TASK>_<OPTION>``. Keys are never logged or included in config reprs.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MAX_TOKENS = 8000
+TASKS = ("analysis", "chat", "trends", "detect")
 PROVIDER_DEFAULTS = {
     "anthropic": {
         "analysis_model": "claude-opus-4-8",
@@ -41,84 +34,123 @@ PROVIDER_DEFAULTS = {
 
 
 class ConfigError(RuntimeError):
-    """Raised for missing/invalid configuration. The CLI prints this cleanly."""
+    """Raised for missing/invalid configuration. Messages never include API keys."""
 
 
 @dataclass
 class Config:
-    provider: str  # "anthropic" | "openai"
-    api_key: str
+    provider: str
+    api_key: str = field(repr=False)
     model: str
     effort: str
     max_tokens: int
-    base_url: str | None = None
+    base_url: str | None = field(default=None, repr=False)
+    thinking: str = "adaptive"
+    api_key_env: str = ""
 
 
-def load_config(require_key: bool = True) -> Config:
-    """Resolve configuration from the environment (and a local .env if present).
+def _env(name: str) -> str | None:
+    return os.environ.get(name, "").strip() or None
 
-    Args:
-        require_key: if True (default), raise :class:`ConfigError` when the selected
-            provider's key (or required model) is missing. Pass False for code paths
-            that don't call a model (e.g. ``aoe2coach metrics``).
+
+def load_config(require_key: bool = True, *, task: str | None = None) -> Config:
+    """Resolve a default or task-specific model connection.
+
+    Unset/blank task options inherit the default. A provider change uses the new
+    provider's model, endpoint, key, and effort defaults. Detection keeps its cheap
+    model and 1200-token cap unless explicitly overridden. ``require_key=False``
+    allows a missing key/model for offline diagnostics; malformed options still fail.
     """
-    load_dotenv()  # no-op without a .env; never overrides real env vars
-
-    provider = os.environ.get("AOE2COACH_PROVIDER", "").strip().lower()
-    if not provider:
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            provider = "anthropic"
-        elif os.environ.get("OPENAI_API_KEY"):
-            provider = "openai"
+    load_dotenv()  # never overrides real environment variables
+    if task is not None and task not in TASKS:
+        raise ConfigError("Unknown coaching task. Use analysis, chat, trends, or detect.")
+    prefix = f"AOE2COACH_{task.upper()}_" if task else "AOE2COACH_"
+    default_provider = _env("AOE2COACH_PROVIDER")
+    if not default_provider:
+        if _env("ANTHROPIC_API_KEY"):
+            default_provider = "anthropic"
+        elif _env("OPENAI_API_KEY"):
+            default_provider = "openai"
         else:
-            provider = DEFAULT_PROVIDER
-    model = (os.environ.get("AOE2COACH_MODEL") or "").strip() or None
-    effort_override = (os.environ.get("AOE2COACH_EFFORT") or "").strip().lower() or None
-    max_tokens = int(os.environ.get("AOE2COACH_MAX_TOKENS", DEFAULT_MAX_TOKENS))
+            default_provider = DEFAULT_PROVIDER
+    default_provider = default_provider.lower()
+    provider = (_env(prefix + "PROVIDER") or default_provider).lower()
+    if provider not in PROVIDER_DEFAULTS:
+        raise ConfigError(f"{prefix}PROVIDER must be 'anthropic' or 'openai'.")
+    defaults = PROVIDER_DEFAULTS[provider]
+    same_provider = provider == default_provider
 
-    if provider == "anthropic":
-        defaults = PROVIDER_DEFAULTS["anthropic"]
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        model = model or defaults["analysis_model"]
-        base_url = None
-        effort = effort_override or defaults["effort"]
-        if effort not in defaults["efforts"]:
-            raise ConfigError(
-                "AOE2COACH_EFFORT for Anthropic must be one of: low, medium, high, xhigh, max."
-            )
-        key_hint = (
-            "ANTHROPIC_API_KEY is not set.\n"
-            "  1. Get a key: https://console.anthropic.com/settings/keys\n"
-            "  2. cp env.example .env  and paste your key in, OR export ANTHROPIC_API_KEY=...\n"
-            "Or switch providers: AOE2COACH_PROVIDER=openai (see env.example)."
-        )
-    elif provider == "openai":
-        defaults = PROVIDER_DEFAULTS["openai"]
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip() or None
-        effort = effort_override or defaults["effort"]
-        if effort not in defaults["efforts"]:
-            raise ConfigError(
-                "AOE2COACH_EFFORT for OpenAI must be one of: none, low, medium, high, xhigh."
-            )
-        if not model and not base_url:
-            model = defaults["analysis_model"]
-        if require_key and not model:
-            raise ConfigError(
-                "AOE2COACH_PROVIDER=openai with OPENAI_BASE_URL requires AOE2COACH_MODEL "
-                "(use the model id served by that endpoint). See env.example."
-            )
-        key_hint = (
-            "OPENAI_API_KEY is not set (required for AOE2COACH_PROVIDER=openai).\n"
-            "Get a key: https://platform.openai.com/api-keys\n"
-            "Set OPENAI_API_KEY, and optionally OPENAI_BASE_URL + AOE2COACH_MODEL for "
-            "OpenRouter / a local server. See env.example."
-        )
-    else:
-        raise ConfigError(f"Unknown AOE2COACH_PROVIDER '{provider}'. Use 'anthropic' or 'openai'.")
+    def option(name: str, *, connection: bool = False) -> str | None:
+        value = _env(prefix + name)
+        if value is None and (not connection or same_provider):
+            value = _env("AOE2COACH_" + name)
+        return value
 
+    native_prefix = provider.upper()
+    base_url = option("BASE_URL", connection=True) or _env(f"{native_prefix}_BASE_URL")
+    if base_url:
+        try:
+            url = urlsplit(base_url)
+            valid_url = (
+                url.scheme in {"http", "https"}
+                and url.hostname
+                and not url.username
+                and not url.password
+                and not url.query
+                and not url.fragment
+                and not any(character.isspace() for character in base_url)
+            )
+            _ = url.port  # validate a supplied port without including its value in errors
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ConfigError(
+                f"{prefix}BASE_URL must be an HTTP(S) endpoint "
+                "without credentials, query, or fragment."
+            )
+
+    model = option("MODEL", connection=True)
+    if task == "detect" and not _env(prefix + "MODEL"):
+        # Hosted providers have a lightweight extraction model. Endpoint model IDs
+        # are private to the endpoint, so reuse its configured model by default.
+        model = model if base_url else defaults["detect_model"]
+    if not model and (provider == "anthropic" or not base_url):
+        model = defaults["analysis_model"]
+    if require_key and not model:
+        raise ConfigError(
+            f"{prefix}MODEL is required for a custom openai endpoint "
+            "(use the model ID served by that endpoint). See env.example."
+        )
+
+    effort_override = (
+        _env(prefix + "EFFORT") if task == "detect" else option("EFFORT", connection=True)
+    )
+    effort = (effort_override or ("" if task == "detect" else defaults["effort"])).lower()
+    if effort and effort not in defaults["efforts"]:
+        choices = ", ".join(sorted(defaults["efforts"]))
+        raise ConfigError(f"{prefix}EFFORT for {provider} must be one of: {choices}.")
+    thinking = (option("THINKING") or "adaptive").lower()
+    if thinking not in {"adaptive", "off"}:
+        raise ConfigError(f"{prefix}THINKING must be 'adaptive' or 'off'.")
+    try:
+        max_tokens = int(option("MAX_TOKENS") or DEFAULT_MAX_TOKENS)
+    except ValueError:
+        raise ConfigError(f"{prefix}MAX_TOKENS must be a positive integer.") from None
+    if max_tokens <= 0:
+        raise ConfigError(f"{prefix}MAX_TOKENS must be a positive integer.")
+    if task == "detect" and not _env(prefix + "MAX_TOKENS"):
+        max_tokens = min(max_tokens, 1200)
+
+    key_env = option("API_KEY_ENV", connection=True) or f"{native_prefix}_API_KEY"
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
+        raise ConfigError(
+            f"{prefix}API_KEY_ENV must name an environment variable containing the key."
+        )
+    api_key = _env(key_env) or ""
     if require_key and not api_key:
-        raise ConfigError(key_hint)
+        raise ConfigError(
+            f"{key_env} is not set. Set it in your environment or .env; see env.example."
+        )
 
     return Config(
         provider=provider,
@@ -127,4 +159,6 @@ def load_config(require_key: bool = True) -> Config:
         effort=effort,
         max_tokens=max_tokens,
         base_url=base_url,
+        thinking=thinking,
+        api_key_env=key_env,
     )

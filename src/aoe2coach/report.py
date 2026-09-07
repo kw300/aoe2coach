@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as _dt
+import html
+import re
 from pathlib import Path
 
 from .metrics import ReplayMetrics
@@ -151,3 +153,64 @@ def default_report_path(metrics: ReplayMetrics, out_dir: str | Path = "reports")
     safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in stem).strip()[:60]
     ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     return out_dir / f"{safe or 'replay'}-{ts}.coach.md"
+
+
+def _markdown_label(value: str) -> str:
+    """Keep replay/player labels as text when opened in a Markdown viewer."""
+    value = html.escape(" ".join(value.splitlines()), quote=False)
+    return re.sub(r"([\\`*_{}\[\]()#+!|])", r"\\\1", value)
+
+
+def build_chat_export(
+    *,
+    replay_name: str,
+    map_name: str,
+    duration_label: str,
+    players: list[dict],
+    focus_player: str | None,
+    messages: list[dict],
+) -> str:
+    """Export the visible transcript, supplied separately from model context.
+
+    Callers provide display labels and visible messages only; this function never
+    reads a chat object's internal prompts, metrics, configuration, or API keys.
+    """
+    roster = ", ".join(
+        f"{_markdown_label(p['name'])} ({_markdown_label(p['civilization'])})" for p in players
+    )
+    lines = [
+        "# AoE2 Coaching Conversation",
+        "",
+        f"**Replay:** {_markdown_label(Path(replay_name).name)}",
+        f"**Map:** {_markdown_label(map_name)} · **Duration:** {_markdown_label(duration_label)}",
+        f"**Players:** {roster}",
+        f"**Coaching focus:** {_markdown_label(focus_player) if focus_player else 'All players'}",
+        "",
+    ]
+    for message in messages:
+        role = message["role"]
+        if role not in {"user", "assistant", "error"}:
+            continue
+        heading = {"user": "You", "assistant": "Coach", "error": "Request failed"}[role]
+        lines.extend([f"## {heading}", ""])
+        if role == "assistant":
+            model = _markdown_label(message.get("model") or "unavailable")
+            input_tokens = message.get("input_tokens")
+            output_tokens = message.get("output_tokens")
+            input_label = str(input_tokens) if input_tokens is not None else "unavailable"
+            output_label = str(output_tokens) if output_tokens is not None else "unavailable"
+            lines.extend([message["text"], ""])
+            lines.extend(
+                [
+                    f"_Model: {model} · Input tokens: {input_label} "
+                    f"· Output tokens: {output_label}_",
+                    "",
+                ]
+            )
+        else:
+            # Browser user/error messages are plain text; quote them so their
+            # Markdown syntax does not become report headings or HTML on export.
+            lines.extend(
+                ["> " + _markdown_label(line) for line in message["text"].splitlines()] + [""]
+            )
+    return "\n".join(lines).rstrip() + "\n"

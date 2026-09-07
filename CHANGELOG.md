@@ -7,6 +7,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project aims to fol
 ## [Unreleased]
 
 ### Added
+- Per-task model, provider, endpoint, and key-variable assignments for analysis,
+  follow-up chat, trends, and habit detection, with existing defaults preserved.
+- Per-answer model/token labels, included in conversation exports.
+- Offline `aoe2coach doctor` diagnostics with optional JSON output.
 - **Flagship + lightweight model workflow.** aoe2coach can use a lightweight model for
   preliminary habit detection and a flagship model for full replay analysis and detailed
   coaching, so users can review practice focus before the more expensive call.
@@ -53,6 +57,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project aims to fol
 - **Demo video.** README now embeds the updated uploaded demo video asset.
 
 ### Fixed
+- Independent sessions for repeated opens of the same replay, with safe retry behavior.
+- Missing provider token usage is shown as unavailable instead of zero.
+- The MCP extra remains on its supported SDK major version (`mcp<2`).
 - **Idle-TC estimation.** Villager-production gaps now account for age-up research time and
   queued villager bursts, reducing false idle-TC reports.
 - **Detected habits persistence.** Lightweight detected habits no longer disappear when the

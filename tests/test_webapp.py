@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("flask")
 
 from aoe2coach import webapp  # noqa: E402
+from aoe2coach.coach import CoachResult  # noqa: E402
 
 
 def test_index_lists_replays_and_dropzone(monkeypatch):
@@ -29,7 +30,9 @@ def test_index_lists_replays_and_dropzone(monkeypatch):
     assert b"Export session" in r.data
     assert b'id="exportSession"' in r.data
     assert b"replace(/\\r\\n/g,'\\n')" in r.data
-    assert b"flagship model" in r.data
+    assert b"analysis model" in r.data
+    assert b"Input tokens:" in r.data
+    assert b"Download conversation" in r.data
     assert b"Opus" not in r.data
     assert b"Sonnet" not in r.data
     assert b"claude" not in r.data.lower()
@@ -224,9 +227,17 @@ def test_open_session_sends_focus_player_and_habits(monkeypatch):
     class FakeChat:
         def send(self, text):
             calls["opening_text"] = text
-            return SimpleNamespace(text="report")
+            return CoachResult("report", "analysis-model", 10, 5, 0, 0)
 
-    metrics = SimpleNamespace(matchup_context={}, timeline=[], players=[])
+    metrics = SimpleNamespace(
+        matchup_context={},
+        timeline=[],
+        players=[
+            SimpleNamespace(
+                name="Me", civilization="Romans", action_plan=[], build_order_comparison=[]
+            )
+        ],
+    )
     monkeypatch.setattr(webapp, "CoachChat", FakeChat)
     monkeypatch.setattr(webapp, "parse_replay", lambda _path: object())
     monkeypatch.setattr(webapp, "build_metrics", lambda _parsed: metrics)
@@ -237,7 +248,7 @@ def test_open_session_sends_focus_player_and_habits(monkeypatch):
 
     monkeypatch.setattr(webapp, "build_opening_message", fake_opening)
     result = webapp._open_session(
-        "x",
+        "x.aoe2record",
         ["Stop floating wood"],
         focus_player="Me",
         detected_habits=["Late farms"],
@@ -249,7 +260,15 @@ def test_open_session_sends_focus_player_and_habits(monkeypatch):
 
 
 def test_detect_habit_route_uses_model_helper(monkeypatch):
-    metrics = SimpleNamespace(matchup_context={}, timeline=[], players=[])
+    metrics = SimpleNamespace(
+        matchup_context={},
+        timeline=[],
+        players=[
+            SimpleNamespace(
+                name="Me", civilization="Romans", action_plan=[], build_order_comparison=[]
+            )
+        ],
+    )
     monkeypatch.setattr(webapp, "parse_replay", lambda _path: object())
     monkeypatch.setattr(webapp, "build_metrics", lambda _parsed: metrics)
     monkeypatch.setattr(
@@ -261,7 +280,7 @@ def test_detect_habit_route_uses_model_helper(monkeypatch):
         },
     )
     client = webapp.create_app().test_client()
-    r = client.post("/api/detect-habits", json={"replay": "x", "focus_player": "Me"})
+    r = client.post("/api/detect-habits", json={"replay": "x.aoe2record", "focus_player": "Me"})
     assert r.get_json()["habits"][0]["player"] == "Me"
     assert r.get_json()["model"] == "cheap-model"
 

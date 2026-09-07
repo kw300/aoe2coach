@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install (full backend + dev + viz + web + mcp)
-        run: pip install -e ".[full,dev,viz,web,mcp]"
+      - name: Install (full backend + dev + viz + web + mcp + openai)
+        run: pip install -e ".[full,dev,viz,web,mcp,openai]"
       - name: Lint
         run: ruff check src tests
       - name: Format check

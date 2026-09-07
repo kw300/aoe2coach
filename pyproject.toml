@@ -37,7 +37,7 @@ full = ["mgz>=1.8"]
 # games. Lower-level: some rich fields are unavailable.
 fast = ["mgz-fast @ git+https://github.com/AoEInsights/aoc-mgz.git"]
 openai = ["openai>=1.40"]      # use GPT / OpenRouter / local models (BYO-model)
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.0,<2"]         # FastMCP import/API used by mcp_server.py
 viz = ["pillow>=10"]            # minimap rendering (needs the full backend too)
 web = ["flask>=3"]             # local replay-browser front end
 dev = [

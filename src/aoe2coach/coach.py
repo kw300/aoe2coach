@@ -1,22 +1,19 @@
-"""Layer 3 — turn deterministic metrics into coaching advice with a model.
+"""Layer 3 — turn deterministic metrics into coaching advice using the chosen model.
 
-This is the only module that calls a model provider. It supports:
-
-- ``anthropic`` — native Anthropic SDK with prompt caching, adaptive thinking, and
-  effort controls.
-- ``openai`` — OpenAI-compatible chat completions, including OpenAI, OpenRouter, and
-  local servers via ``OPENAI_BASE_URL``.
-
-Shared conventions:
+This is the only module that calls model APIs:
 
 - Key handling lives in :mod:`aoe2coach.config` (env-only, fail-fast). The SDK's
-  clients can read keys themselves, but we validate first so the error is friendly.
-- **Prompt caching:** on the Anthropic path, the system prompt + benchmark reference
-  are a large, stable prefix sent as cached system blocks. The per-replay metrics
-  JSON — which differs every call — goes in the user turn, after the cache
-  breakpoint.
-- **Model selection:** configured with ``AOE2COACH_MODEL``; lightweight habit
-  detection can use a separate ``AOE2COACH_DETECT_MODEL``.
+  ``Anthropic()`` would read ``ANTHROPIC_API_KEY`` itself, but we validate first
+  so the error is friendly.
+- **Prompt caching:** the system prompt + benchmark reference are a large, stable
+  prefix sent as cached system blocks. The per-replay metrics JSON — which differs
+  every call — goes in the user turn, *after* the cache breakpoint. Repeated
+  analyses reuse the cached prefix at ~10% cost. (Caching only engages once the
+  prefix exceeds the model's minimum cacheable size; below that it's a silent
+  no-op, never an error.)
+- **Routing:** analysis, follow-up chat, trends, and habit detection have optional model overrides.
+  Native Anthropic requests use adaptive thinking by default; users can omit it
+  with ``THINKING=off`` when choosing a model with different request requirements.
 - **Streaming:** optional, for live output in the terminal.
 """
 
@@ -40,18 +37,37 @@ from .metrics import ReplayMetrics
 class CoachResult:
     text: str
     model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_write_tokens: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+
+    def to_dict(self) -> dict:
+        """Public response metadata; absent provider usage stays unavailable."""
+        return {
+            "model": self.model,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+        }
 
     @property
     def cost_note(self) -> str:
-        cached = "cache hit" if self.cache_read_tokens else "cache miss (first run)"
-        return (
-            f"{self.model} · in {self.input_tokens} / out {self.output_tokens} tokens "
-            f"· {cached} ({self.cache_read_tokens} cached)"
+        def tokens(value: int | None) -> str:
+            return str(value) if value is not None else "unavailable"
+
+        usage = (
+            f"in {tokens(self.input_tokens)} / out {tokens(self.output_tokens)} tokens"
+            if self.input_tokens is not None or self.output_tokens is not None
+            else "token usage unavailable"
         )
+        if self.cache_read_tokens is None and self.cache_write_tokens is None:
+            cache = "cache usage unavailable"
+        else:
+            cache = f"cache read {tokens(self.cache_read_tokens)}"
+            cache += f" / written {tokens(self.cache_write_tokens)} tokens"
+        return f"{self.model} · {usage} · {cache}"
 
 
 def _prompt(name: str) -> str:
@@ -103,7 +119,7 @@ def coach_replay(
     stream: bool = False,
     on_text: Callable[[str], None] | None = None,
 ) -> CoachResult:
-    """Send metrics to the configured model and return coaching advice.
+    """Send metrics to the analysis model and return coaching advice.
 
     Args:
         metrics: the deterministic features for one replay.
@@ -117,7 +133,7 @@ def coach_replay(
         anthropic.AuthenticationError: the API key is invalid.
         anthropic.RateLimitError / APIStatusError: surfaced to the caller.
     """
-    config = config or load_config(require_key=True)
+    config = config or load_config(require_key=True, task="analysis")
     return _run(
         _build_system_blocks("system.md"),
         _user_content(metrics, focus_player, elo),
@@ -134,9 +150,9 @@ def coach_trends(
     stream: bool = False,
     on_text: Callable[[str], None] | None = None,
 ) -> CoachResult:
-    """Send a multi-game :class:`~aoe2coach.trends.TrendSummary` to the configured
-    model for recurring-weakness coaching."""
-    config = config or load_config(require_key=True)
+    """Send a multi-game :class:`~aoe2coach.trends.TrendSummary` to the trends model for
+    recurring-weakness coaching."""
+    config = config or load_config(require_key=True, task="trends")
     payload = json.dumps(summary.to_dict(), sort_keys=True, indent=2, default=str)
     user = (
         f"Here is a player's recent multi-game history. Identify recurring habits and "
@@ -197,7 +213,9 @@ def _habit_detection_payload(metrics: ReplayMetrics) -> dict:
 def _detection_config(config: Config) -> Config:
     detect_model = os.environ.get("AOE2COACH_DETECT_MODEL", "").strip()
     if not detect_model:
-        if config.provider == "anthropic":
+        if config.base_url:
+            detect_model = config.model
+        elif config.provider == "anthropic":
             detect_model = PROVIDER_DEFAULTS["anthropic"]["detect_model"]
         elif config.provider == "openai" and not config.base_url:
             detect_model = PROVIDER_DEFAULTS["openai"]["detect_model"]
@@ -230,7 +248,11 @@ def detect_habits(
     focus_player: str | None = None,
 ) -> dict:
     """Use a cheaper model to propose nuanced practice-focus candidates."""
-    config = _detection_config(config or load_config(require_key=True))
+    config = (
+        _detection_config(config)
+        if config is not None
+        else load_config(require_key=True, task="detect")
+    )
     payload = json.dumps(_habit_detection_payload(metrics), sort_keys=True, indent=2, default=str)
     focus = f"\nFocus player: {focus_player}\n" if focus_player else ""
     system = (
@@ -305,14 +327,21 @@ def _run_messages(
 
 def _run_anthropic(system_blocks, messages, config, stream, on_text) -> CoachResult:
     """Native Anthropic path — prompt caching + adaptive thinking + effort."""
-    client = anthropic.Anthropic(api_key=config.api_key)
+    client_options = {"api_key": config.api_key}
+    if config.base_url:
+        client_options["base_url"] = config.base_url
+    client = anthropic.Anthropic(**client_options)
     request = dict(
         model=config.model,
         max_tokens=config.max_tokens,
         system=system_blocks,
         messages=messages,
     )
-    if config.effort and _anthropic_uses_adaptive_effort(config.model):
+    if (
+        config.thinking == "adaptive"
+        and config.effort
+        and _anthropic_uses_adaptive_effort(config.model)
+    ):
         request["thinking"] = {"type": "adaptive"}
         request["output_config"] = {"effort": config.effort}
 
@@ -326,14 +355,14 @@ def _run_anthropic(system_blocks, messages, config, stream, on_text) -> CoachRes
         message = client.messages.create(**request)
 
     text = "".join(b.text for b in message.content if b.type == "text")
-    usage = message.usage
+    usage = getattr(message, "usage", None)
     return CoachResult(
         text=text,
-        model=message.model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-        cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        model=getattr(message, "model", None) or config.model,
+        input_tokens=getattr(usage, "input_tokens", None),
+        output_tokens=getattr(usage, "output_tokens", None),
+        cache_read_tokens=getattr(usage, "cache_read_input_tokens", None),
+        cache_write_tokens=getattr(usage, "cache_creation_input_tokens", None),
     )
 
 
@@ -358,25 +387,35 @@ def _run_openai(system_blocks, messages, config, stream, on_text) -> CoachResult
 
     if stream:
         text_parts: list[str] = []
+        usage = None
+        model = config.model
         resp = client.chat.completions.create(**request, stream=True)
         for chunk in resp:
-            delta = chunk.choices[0].delta.content or ""
+            model = getattr(chunk, "model", None) or model
+            usage = getattr(chunk, "usage", None) or usage
+            # Some endpoints emit a final, usage-only chunk with no choices.
+            delta = (chunk.choices[0].delta.content or "") if chunk.choices else ""
             if delta:
                 text_parts.append(delta)
                 if on_text:
                     on_text(delta)
-        return CoachResult("".join(text_parts), config.model, 0, 0, 0, 0)
+        return _openai_result("".join(text_parts), model, usage)
 
     resp = client.chat.completions.create(**request)
     text = resp.choices[0].message.content or ""
     usage = getattr(resp, "usage", None)
+    return _openai_result(text, getattr(resp, "model", None) or config.model, usage)
+
+
+def _openai_result(text, model, usage) -> CoachResult:
+    details = getattr(usage, "prompt_tokens_details", None)
     return CoachResult(
         text=text,
-        model=getattr(resp, "model", config.model),
-        input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-        output_tokens=getattr(usage, "completion_tokens", 0) or 0,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
+        model=model,
+        input_tokens=getattr(usage, "prompt_tokens", None),
+        output_tokens=getattr(usage, "completion_tokens", None),
+        cache_read_tokens=getattr(details, "cached_tokens", None),
+        cache_write_tokens=None,
     )
 
 
@@ -410,10 +449,14 @@ class CoachChat:
     The system prompt + benchmarks are the cached prefix; the conversation accumulates
     in ``messages``. Drive it from a REPL or a web UI: call :meth:`send` with the opening
     message (from :func:`build_opening_message`), then with each follow-up.
+
+    The opening uses the analysis connection and follow-ups resolve the chat connection
+    when needed. Supplying ``config`` explicitly pins every turn to that connection.
     """
 
     def __init__(self, *, config: Config | None = None, system_file: str = "system.md"):
-        self.config = config or load_config(require_key=True)
+        self._explicit_config = config
+        self.config = config or load_config(require_key=True, task="analysis")
         self.system_blocks = _build_system_blocks(system_file)
         self.messages: list[dict] = []
 
@@ -424,9 +467,14 @@ class CoachChat:
         stream: bool = False,
         on_text: Callable[[str], None] | None = None,
     ) -> CoachResult:
-        self.messages.append({"role": "user", "content": user_text})
+        config = self.config
+        if self.messages and self._explicit_config is None:
+            config = load_config(require_key=True, task="chat")
+        messages = [*self.messages, {"role": "user", "content": user_text}]
         result = _run_messages(
-            self.system_blocks, self.messages, config=self.config, stream=stream, on_text=on_text
+            self.system_blocks, messages, config=config, stream=stream, on_text=on_text
         )
-        self.messages.append({"role": "assistant", "content": result.text})
+        # Commit the turn only once the request succeeds, so retries keep clean history.
+        self.messages = [*messages, {"role": "assistant", "content": result.text}]
+        self.config = config
         return result

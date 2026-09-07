@@ -49,7 +49,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     from .replays import resolve_replay
     from .report import build_report, default_report_path
 
-    config = load_config(require_key=True)  # fail fast before parsing if no key
+    config = load_config(require_key=True, task="analysis")  # fail fast before parsing
     path = resolve_replay(args.replay)
     print(f"Parsing {path.name} …", file=sys.stderr)
     metrics = build_metrics(parse_replay(path))
@@ -136,7 +136,7 @@ def _cmd_trends(args: argparse.Namespace) -> int:
     from .coach import coach_trends
     from .config import load_config
 
-    config = load_config(require_key=True)
+    config = load_config(require_key=True, task="trends")
     print(f"Analyzing trends with {config.model} …\n", file=sys.stderr)
     result = coach_trends(
         summary,
@@ -179,6 +179,20 @@ def _cmd_update_data(_args: argparse.Namespace) -> int:
     return update_main()
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import check_setup
+
+    checks = check_setup()
+    ok = not any(check.status == "error" for check in checks)
+    if args.json:
+        print(json.dumps({"ok": ok, "checks": [check.to_dict() for check in checks]}, indent=2))
+    else:
+        print("Local setup checks (offline; API keys and model availability are not verified):\n")
+        for check in checks:
+            print(f"[{check.status.upper()}] {check.name}: {check.message}")
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aoe2coach",
@@ -190,6 +204,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("find", help="List replays discovered on this machine.").set_defaults(
         func=_cmd_find
     )
+
+    doctor = sub.add_parser("doctor", help="Check local setup without making API calls.")
+    doctor.add_argument("--json", action="store_true", help="Print diagnostics as JSON.")
+    doctor.set_defaults(func=_cmd_doctor)
 
     m = sub.add_parser("metrics", help="Print parsed metrics JSON (no model needed).")
     m.add_argument("replay", nargs="?", default="latest", help="Path or 'latest'.")

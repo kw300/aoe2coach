@@ -13,24 +13,65 @@ from __future__ import annotations
 import html
 import json
 import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
+from uuid import uuid4
 
 from . import build_metrics, parse_replay
-from .coach import CoachChat, build_opening_message, detect_habits
+from .coach import CoachChat, CoachResult, build_opening_message, detect_habits
 from .config import ConfigError
+from .metrics import ReplayMetrics
 from .playercolors import color_hex, color_hex_from_name, color_name
+from .report import build_chat_export
 
 try:
-    from flask import Flask, render_template_string, request, send_file
+    from flask import Flask, Response, render_template_string, request, send_file
     from werkzeug.utils import secure_filename
 except ImportError as exc:  # pragma: no cover
     raise SystemExit('The web UI needs Flask:  pip install -e ".[web]"') from exc
 
-_SESSIONS: dict[str, CoachChat] = {}
 _UPLOAD_DIR = Path(tempfile.gettempdir()) / "aoe2coach-uploads"
 _MAX_HABITS = 12
 _MAX_HABIT_LEN = 160
+
+
+@dataclass
+class _Session:
+    chat: CoachChat
+    replay: str
+    metrics: ReplayMetrics
+    focus_player: str | None
+    # Visible conversation only; never export hidden metrics or model prompts.
+    transcript: list[dict] = field(default_factory=list)
+    lock: Lock = field(default_factory=Lock)
+
+
+def _result_payload(result: CoachResult, text_key: str) -> dict:
+    return {**result.to_dict(), text_key: result.text}
+
+
+def _model_error(exc: Exception) -> str:
+    if isinstance(exc, ConfigError):
+        return str(exc).splitlines()[0]
+    # Provider exceptions can contain request internals and credentials.
+    return "The model request failed. Check your connection and model settings, then try again."
+
+
+def _replay_metrics(replay: str) -> ReplayMetrics:
+    if not isinstance(replay, str) or not replay.strip():
+        raise ValueError("Choose a replay first.")
+    if Path(replay).suffix.lower() != ".aoe2record":
+        raise ValueError("Choose a .aoe2record file.")
+    return build_metrics(parse_replay(replay))
+
+
+def _validate_focus(metrics, focus_player) -> None:
+    if focus_player is not None and (
+        not isinstance(focus_player, str) or focus_player not in {p.name for p in metrics.players}
+    ):
+        raise ValueError("Choose a player from this replay, or select all players.")
 
 
 def _date_label(value: str | None) -> str | None:
@@ -199,7 +240,11 @@ def _listed_replays() -> list[Path]:
     """Replays to show: the launch folder + anything dragged in (NOT the savegame folder —
     that fills the UI with current-patch games the rich backend can't read)."""
     seen: dict[Path, Path] = {}
-    for p in [*Path.cwd().glob("*.aoe2record"), *_UPLOAD_DIR.glob("*.aoe2record")]:
+    for p in [
+        *Path.cwd().glob("*.aoe2record"),
+        *_UPLOAD_DIR.glob("*.aoe2record"),
+        *_UPLOAD_DIR.glob("*/*.aoe2record"),
+    ]:
         seen.setdefault(p.resolve(), p)
 
     def mtime(p: Path) -> float:
@@ -261,7 +306,7 @@ def _web_preview(metrics) -> dict:
 
 def _preview_replay(replay: str) -> dict:
     try:
-        metrics = build_metrics(parse_replay(replay))
+        metrics = _replay_metrics(replay)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
     elo = _fetch_elo(metrics)
@@ -270,12 +315,14 @@ def _preview_replay(replay: str) -> dict:
 
 def _detect_habits_for_replay(replay: str, focus_player: str | None = None) -> dict:
     try:
-        metrics = build_metrics(parse_replay(replay))
-        return detect_habits(metrics, focus_player=focus_player)
-    except ConfigError as exc:
-        return {"error": str(exc).splitlines()[0]}
+        metrics = _replay_metrics(replay)
+        _validate_focus(metrics, focus_player)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
+    try:
+        return detect_habits(metrics, focus_player=focus_player)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": _model_error(exc)}
 
 
 def _clean_habits(raw) -> list[str]:
@@ -344,29 +391,37 @@ def _open_session(
     habits=None,
     focus_player: str | None = None,
     detected_habits=None,
+    *,
+    sessions: dict[str, _Session] | None = None,
 ) -> dict:
     try:
-        chat = CoachChat()
-        metrics = build_metrics(parse_replay(replay))
-    except ConfigError as exc:
-        return {"error": str(exc).splitlines()[0]}
+        metrics = _replay_metrics(replay)
+        _validate_focus(metrics, focus_player)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
     elo = _fetch_elo(metrics, timeout=3.0) or None
-    # Trends are skipped on open for speed (parsing recent games + a bigger prompt is
-    # slow); habits are available via the CLI `aoe2coach trends`.
+    # Trends are skipped on open for speed; pinned and detected habits are retained.
     opening = build_opening_message(metrics, focus_player=focus_player, elo=elo, trends=None)
     opening += _practice_focus_block(_clean_habits(habits), _clean_habits(detected_habits))
     try:
+        chat = CoachChat()
         result = chat.send(opening)
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
-    _SESSIONS[str(replay)] = chat
-    return {"report": result.text, "insights": _web_insights(metrics, elo)}
+        return {"error": _model_error(exc)}
+    session_id = uuid4().hex
+    session = _Session(chat, str(replay), metrics, focus_player)
+    session.transcript.append({"role": "assistant", "text": result.text, **result.to_dict()})
+    if sessions is not None:
+        sessions[session_id] = session
+    return {
+        "session_id": session_id,
+        **_result_payload(result, "report"),
+        "insights": _web_insights(metrics, elo),
+    }
 
 
-_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>aoe2coach</title>
+_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>aoe2coach</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
  :root{color-scheme:dark}
@@ -418,6 +473,8 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>aoe2coach</ti
  .resultBadge.won{background:#194f31;color:#86efac;border:1px solid #2a7a4e}.resultBadge.lost{background:#552020;color:#fecaca;border:1px solid #8a3434}.resultBadge.unknown{background:#303642;color:#cdd3dc;border:1px solid #475062}
  .focusBtn{background:#2d6cdf;color:#fff;border:0;border-radius:8px;padding:.45rem .65rem;cursor:pointer;font:inherit;font-size:.82rem}
  .playerPick.selected{border-color:#3a6df0;background:#222838}.focusBtn.selected{background:#263142;border:1px solid #3a4150}
+ .responseMeta{border-top:1px solid #2b2f38;padding-top:.55rem;margin-top:.8rem;font-size:.75rem;color:#9aa4b2}
+ .plain,.you,.err{white-space:pre-wrap}
  .muted{color:#9aa4b2} .err{color:#ff7676}
  #bar{border-top:1px solid #2b2f38;padding:1rem;display:flex;gap:.6rem;max-width:980px;margin:0 auto;width:100%;align-items:flex-end}
  #q{flex:1;background:#0f1115;border:1px solid #2b2f38;color:#e6e6e6;border-radius:8px;padding:.6rem .8rem;font:inherit;min-height:42px;max-height:180px;resize:vertical}
@@ -443,14 +500,15 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>aoe2coach</ti
 </style></head><body>
 <div id="side">
   <h1>🏰 aoe2coach</h1>
-  <div id="drop">⬇ Drag a <code>.aoe2record</code> here<br><span style="font-size:.75rem">or pick one below</span></div>
+  <div id="drop" role="button" tabindex="0">⬇ Drag a <code>.aoe2record</code> here<br><span style="font-size:.75rem">or click to upload</span></div>
+  <input id="file" type="file" accept=".aoe2record" hidden>
   <div id="list" class="leftVResize" data-vresize-key="list">{{ replays|safe }}</div>
   <div id="insights"></div>
 </div>
 <div class="resize-h left" id="leftResize" title="Resize replay panel"></div>
 <div id="main">
   <div id="log"><div class="msg coach muted">Drag in a replay or pick one on the left. I'll preview it first; choose a player when you're ready to spend tokens on coaching.</div></div>
-  <div id="bar"><textarea id="q" placeholder="Pick a replay first…" disabled rows="1"></textarea><button class="send" id="send" disabled>Send</button></div>
+  <div id="bar"><a id="downloadConversation" hidden>Download conversation</a><textarea id="q" placeholder="Pick a replay first…" disabled rows="1"></textarea><button class="send" id="send" disabled>Send</button></div>
 </div>
 <div class="resize-h right" id="rightResize" title="Resize practice panel"></div>
 <div id="practice">
@@ -458,22 +516,61 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>aoe2coach</ti
   <div id="practiceBody"></div>
 </div>
 <script>
-let current=null, currentInsights=null, currentInsightsPath=null, currentPreview=null, currentFocus=null, sessionOpen=false;
+let current=null, sessionId=null, pending=false, currentInsights=null, currentInsightsPath=null, currentPreview=null, currentFocus=null, sessionOpen=false;
 let detectedLoading=false, detectedError='', detectedModel='', detectedFocus=null, detectRequestId=0, analyzing=false;
 const side=document.getElementById('side'), list=document.getElementById('list'), leftResize=document.getElementById('leftResize'), rightResize=document.getElementById('rightResize');
 const log=document.getElementById('log'), q=document.getElementById('q'), send=document.getElementById('send'), insights=document.getElementById('insights');
 const practice=document.getElementById('practice'), practiceBody=document.getElementById('practiceBody'), exportSession=document.getElementById('exportSession');
+const fileInput=document.getElementById('file');
 const HABIT_STORE='aoe2coach.practiceFocus.v1';
-function md(t){ try{return marked.parse(t);}catch(e){return esc(t);} }
 function esc(t){ return String(t??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 let conversationLog=[];
-function add(role, text, isHtml, exportText){
-  const d=document.createElement('div'); d.className='msg '+role; d.innerHTML=isHtml?text:md(text); log.appendChild(d); log.scrollTop=log.scrollHeight;
-  if(exportText!==false && !String(role).includes('muted')) conversationLog.push({role:String(role).includes('you')?'You':'Coach', text:String(exportText??text??'')});
+function renderMarkdown(node, text){
+  if(typeof marked==='undefined'){node.textContent=text;node.classList.add('plain');return;}
+  const source=document.createElement('template');
+  try{source.innerHTML=marked.parse(text);}catch(e){node.textContent=text;return;}
+  const allowed=new Set('P BR HR H1 H2 H3 H4 H5 H6 STRONG EM DEL UL OL LI BLOCKQUOTE PRE CODE TABLE THEAD TBODY TR TH TD A'.split(' '));
+  function copy(from,to){
+    for(const child of from.childNodes){
+      if(child.nodeType===Node.TEXT_NODE){to.appendChild(document.createTextNode(child.textContent));continue;}
+      if(child.nodeType!==Node.ELEMENT_NODE)continue;
+      if(!allowed.has(child.tagName)){to.appendChild(document.createTextNode(child.outerHTML));continue;}
+      const clean=document.createElement(child.tagName.toLowerCase());
+      if(child.tagName==='A'){
+        try{const url=new URL(child.getAttribute('href'));if(['https:','http:','mailto:'].includes(url.protocol)){clean.href=url.href;clean.rel='noopener noreferrer';clean.target='_blank';}}catch(e){}
+      }
+      copy(child,clean);to.appendChild(clean);
+    }
+  }
+  copy(source.content,node);
+}
+function token(value){return Number.isInteger(value)?value.toLocaleString():'unavailable';}
+function metadataLabel(meta){
+  return (meta.model||'Model unavailable')+' · Input tokens: '+token(meta.input_tokens)+' · Output tokens: '+token(meta.output_tokens);
+}
+function add(role, text, isHtml, exportText, meta){
+  const d=document.createElement('div'); d.className='msg '+role;
+  if(isHtml) d.innerHTML=text; // Only locally built preview markup with escaped labels.
+  else if(role==='coach') renderMarkdown(d,String(text??''));
+  else d.textContent=text;
+  if(meta){const m=document.createElement('div');m.className='responseMeta';m.textContent=metadataLabel(meta);d.appendChild(m);}
+  log.appendChild(d); log.scrollTop=log.scrollHeight;
+  if(exportText!==false && !String(role).includes('muted')) conversationLog.push({role:String(role).includes('you')?'You':(String(role).includes('err')?'Request failed':'Coach'), text:String(exportText??text??''), meta});
   return d;
 }
-function busy(b){ send.disabled=b||!sessionOpen; q.disabled=b||!sessionOpen; }
-async function postJSON(url, body){ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); return r.json(); }
+function busy(b){
+  pending=b; send.disabled=b||!sessionOpen; q.disabled=b||!sessionOpen;
+  const download=document.getElementById('downloadConversation');download.hidden=!sessionId;download.href=sessionId?'/api/export/'+encodeURIComponent(sessionId):'';
+  document.querySelectorAll('.rep,[data-analyze]').forEach(x=>x.disabled=b);
+  fileInput.disabled=b; syncFocusButtons();
+}
+async function responseJSON(response){
+  try{return await response.json();}catch(e){throw new Error('The server returned an unreadable response. Try again.');}
+}
+async function postJSON(url, body){
+  return responseJSON(await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+}
+
 function activate(el){ document.querySelectorAll('.rep').forEach(x=>x.classList.remove('active')); if(el) el.classList.add('active'); }
 function loadHabits(){ try{ const v=JSON.parse(localStorage.getItem(HABIT_STORE)||'[]'); return Array.isArray(v)?v.filter(Boolean).slice(0,12):[]; }catch(e){ return []; } }
 let pinnedHabits=loadHabits();
@@ -528,26 +625,26 @@ function syncFocusButtons(){
   document.querySelectorAll('[data-focus]').forEach(btn=>{
     const selected=currentFocus&&btn.dataset.focus===currentFocus;
     btn.textContent=selected?'Selected':'Select player';
-    btn.disabled=!!selected||analyzing;
+    btn.disabled=(!!selected&&!detectedError)||analyzing||pending;
     btn.classList.toggle('selected',!!selected);
     const card=btn.closest('.playerPick'); if(card) card.classList.toggle('selected',!!selected);
   });
 }
 function renderPractice(){
   if(exportSession) exportSession.disabled=!hasExportableSession();
-  const selected=currentFocus?`<div class="habit"><strong>Selected: ${colorizePlayers(currentFocus,comparisonPlayers())}</strong><div class="detail">${detectedLoading?'Detecting habits first…':'Review or pin habits, then run full analysis using the flagship model.'}</div><div class="actions"><button class="miniBtn primary" data-analyze ${detectedLoading||analyzing?'disabled':''}>${analyzing?'Analyzing…':'Run full analysis using flagship model'}</button></div></div>`:'';
+  const selected=currentFocus?`<div class="habit"><strong>Selected: ${colorizePlayers(currentFocus,comparisonPlayers())}</strong><div class="detail">${detectedLoading?'Detecting habits first…':'Review or pin habits, then run full analysis using your analysis model.'}</div><div class="actions"><button class="miniBtn primary" data-analyze ${detectedLoading||analyzing||pending?'disabled':''}>${analyzing?'Analyzing…':'Run full analysis using analysis model'}</button></div></div>`:'';
   const pinned=pinnedHabits.length?pinnedHabits.map((h,i)=>`<div class="habit"><strong>${esc(h)}</strong><div class="actions"><button class="miniBtn" data-remove="${i}">Remove</button></div></div>`).join(''):'<div class="empty">Add 1-3 habits you want the coach to watch for, or pin detected habits after opening a replay.</div>';
   let detected='';
   const rows=detectedHabits();
-  if(detectedLoading) detected='<div class="empty">Detecting candidate habits with the lightweight model…</div>';
+  if(detectedLoading) detected='<div class="empty">Detecting candidate habits with your detection model…</div>';
   else if(detectedError) detected=`<div class="empty">Detected habits unavailable: ${esc(detectedError)}</div>`;
   else if(rows.length) detected=rows.map(h=>{
     const pinned=isPinned(h.label);
     const who=h.player?`<div class="detail">${colorizePlayers(h.player,comparisonPlayers())} · ${esc(h.priority||'medium')}</div>`:'';
     return `<div class="habit"><strong>${esc(h.label)}</strong>${who}<div class="detail">${esc(h.detail||'')}</div><div class="actions"><button class="miniBtn" data-pin="${h.index}" ${pinned?'disabled':''}>${pinned?'Pinned':'Pin habit'}</button></div></div>`;
   }).join('');
-  else detected=currentFocus?'<div class="empty">No detected habits yet for the selected player.</div>':'<div class="empty">Choose a player to ask the lightweight model for detected habits.</div>';
-  const note=currentFocus?'<div class="modelNote">Detected by lightweight model.</div>':'';
+  else detected=currentFocus?'<div class="empty">No detected habits yet for the selected player.</div>':'<div class="empty">Choose a player to ask your detection model for detected habits.</div>';
+  const note=currentFocus?`<div class="modelNote">Detection model: ${esc(detectedModel||'configured model')}</div>`:'';
   practiceBody.innerHTML=`${selected}<h2>Pinned</h2><form id="habitForm"><input id="habitInput" maxlength="160" placeholder="e.g. Stop floating wood"><button class="miniBtn">Add</button></form>${pinned}<h2>Detected</h2>${note}${detected}`;
   syncFocusButtons();
 }
@@ -594,13 +691,15 @@ async function loadDetectedHabits(focusPlayer){
   detectedLoading=true; detectedError='';
   if(detectedFocus!==focusPlayer){ currentInsights.detected_habits=[]; detectedModel=''; }
   detectedFocus=focusPlayer; renderPractice();
-  const res=await postJSON('/api/detect-habits',{replay:current,focus_player:focusPlayer});
-  if(requestId!==detectRequestId) return;
-  detectedLoading=false;
-  if(res.error) detectedError=res.error;
-  else { currentInsights.detected_habits=res.habits||[]; detectedModel=res.model||''; }
-  renderPractice();
+  try{
+    const res=await postJSON('/api/detect-habits',{replay:current,focus_player:focusPlayer});
+    if(requestId!==detectRequestId) return;
+    if(res.error) detectedError=res.error;
+    else { currentInsights.detected_habits=res.habits||[]; detectedModel=res.model||''; }
+  }catch(e){if(requestId===detectRequestId) detectedError='Could not reach the server. Select the player again to retry.';}
+  finally{if(requestId===detectRequestId){detectedLoading=false;renderPractice();}}
 }
+
 function previewHtml(preview){
   const map=[preview.map_name, preview.map_size].filter(Boolean).join(' · ');
   const rated=preview.rated?'ranked':'unranked';
@@ -612,7 +711,7 @@ function previewHtml(preview){
     const resultLabel=result==='won'?'Won':(result==='lost'?'Lost':'Unknown');
     return `<div class="playerPick ${resultClass}" style="--pc:${color}"><strong>${playerSpan(p.name||'Unknown',color)}<span class="resultBadge ${resultClass}">${resultLabel}</span></strong><div class="meta">${esc(p.civilization)}<br>Feudal ${esc(p.feudal)} · Castle ${esc(p.castle)}</div><button class="focusBtn" data-focus="${esc(p.name)}">Select player</button></div>`;
   }).join('');
-  return `<div class="previewHead">${esc(map||'Unknown map')}${date} · ${esc(preview.duration_label)} · ${rated} · parser: ${esc(preview.backend)}</div><div class="muted">No flagship-model call yet. Pick a player to run lightweight habit detection first.</div><div class="playerGrid">${players}</div>`;
+  return `<div class="previewHead">${esc(map||'Unknown map')}${date} · ${esc(preview.duration_label)} · ${rated} · parser: ${esc(preview.backend)}</div><div class="muted">Previewing uses no coaching model. Pick a player to run habit detection with your configured detection model.</div><div class="playerGrid">${players}</div>`;
 }
 function mdClean(value){ return String(value??'—').replace(/\\r\\n/g,'\\n').replace(/[|]/g,'/').trim()||'—'; }
 function bulletList(values){ return values.length?values.map(v=>`- ${mdClean(v)}`).join('\\n'):'- None'; }
@@ -671,7 +770,7 @@ function discussionMarkdown(){
     const visible=(log?.innerText||'').trim();
     return visible?'## Discussion\\n\\n'+visible:'## Discussion\\n- No discussion yet.';
   }
-  return '## Discussion\\n\\n'+rows.map(row=>`### ${row.role}\\n\\n${row.text.trim()}`).join('\\n\\n');
+  return '## Discussion\\n\\n'+rows.map(row=>`### ${row.role}\\n\\n${row.text.trim()}${row.meta?'\\n\\n'+metadataLabel(row.meta):''}`).join('\\n\\n');
 }
 function visibleFallbackMarkdown(){
   return [
@@ -735,44 +834,68 @@ async function exportCurrentSession(){
   add('coach muted',saved?`Exported session. Saved to ${saved}`:'Exported session download.',false,false);
 }
 function showPreview(res){
-  sessionOpen=false; currentFocus=null;
-  if(res.error){ add('coach err','⚠️ '+res.error); current=null; currentPreview=null; q.placeholder='Pick a replay first…'; renderInsights(null,null); busy(false); return; }
-  currentPreview=res.preview; add('coach', previewHtml(res.preview), true, false); q.placeholder='Choose a player to detect habits…'; renderInsights(res.insights,current); busy(false);
+  sessionOpen=false; sessionId=null; currentFocus=null;
+  if(res.error){ add('coach err','⚠️ '+res.error); current=null; currentPreview=null; q.placeholder='Pick a replay first…'; renderInsights(null,null); return; }
+  currentPreview=res.preview; add('coach', previewHtml(res.preview), true, false); q.placeholder='Choose a player to detect habits…'; renderInsights(res.insights,current);
 }
 function showReport(res){
-  if(res.error){ add('coach err','⚠️ '+res.error); sessionOpen=false; q.placeholder='Choose a player to start coaching…'; }
-  else { sessionOpen=true; add('coach', res.report); q.placeholder=`Ask a follow-up for ${currentFocus||'this player'}…`; renderInsights(res.insights,current); }
-  busy(false); if(sessionOpen) q.focus();
+  if(res.error){ add('coach err','⚠️ '+res.error); sessionOpen=false; sessionId=null; q.placeholder='Choose a player to start coaching…'; }
+  else { sessionId=res.session_id; sessionOpen=true; add('coach',res.report,false,undefined,res); q.placeholder=`Ask a follow-up for ${currentFocus||'this player'}…`; renderInsights(res.insights,current); }
 }
 async function selectFocusPlayer(focusPlayer){
-  if(!current||!focusPlayer) return; currentFocus=focusPlayer; sessionOpen=false; q.value=''; q.placeholder=`Review habits for ${focusPlayer}, then run full analysis using the flagship model…`; busy(false); syncFocusButtons(); renderPractice(); loadDetectedHabits(focusPlayer);
+  if(!current||!focusPlayer||pending) return; currentFocus=focusPlayer; sessionOpen=false; sessionId=null; q.value=''; q.placeholder=`Review habits for ${focusPlayer}, then run full analysis using your analysis model…`; busy(false); renderPractice(); loadDetectedHabits(focusPlayer);
 }
 async function startCoaching(){
-  if(!current||!currentFocus||analyzing) return;
-  sessionOpen=false; analyzing=true; busy(true); renderPractice();
-  const wait=add('coach muted',`Running full analysis for ${currentFocus} using the flagship model… (~10–20s)`, false, false);
-  const res=await postJSON('/api/open',{replay:current,focus_player:currentFocus,habits:practiceHabits(),detected_habits:detectedHabitLabels()});
-  wait.remove(); analyzing=false; showReport(res); renderPractice();
+  if(!current||!currentFocus||analyzing||pending||detectedLoading) return;
+  sessionOpen=false; sessionId=null; analyzing=true; busy(true); renderPractice();
+  const wait=add('coach muted',`Running full analysis for ${currentFocus} using your analysis model…`,false,false);
+  try{showReport(await postJSON('/api/open',{replay:current,focus_player:currentFocus,habits:practiceHabits(),detected_habits:detectedHabitLabels()}));}
+  catch(e){add('coach err','Could not reach the server. Try full analysis again.');}
+  finally{wait.remove();analyzing=false;busy(false);renderPractice();if(sessionOpen)q.focus();}
 }
-async function openReplay(el){ activate(el); current=el.dataset.path; currentPreview=null; sessionOpen=false; log.innerHTML=''; insights.innerHTML=''; q.value=''; busy(true);
-  conversationLog=[];
-  currentInsights=null; currentInsightsPath=null; currentFocus=null; detectedLoading=false; detectedError=''; detectedModel=''; detectedFocus=null; renderPractice();
-  const wait=add('coach muted','Reading replay facts…', false, false); const res=await postJSON('/api/preview',{replay:current}); wait.remove(); showPreview(res); }
+function resetReplay(){
+  sessionOpen=false;sessionId=null;currentPreview=null;log.innerHTML='';insights.innerHTML='';q.value='';conversationLog=[];
+  currentInsights=null;currentInsightsPath=null;currentFocus=null;detectedLoading=false;detectedError='';detectedModel='';detectedFocus=null;++detectRequestId;busy(true);renderPractice();
+}
+async function openReplay(el){
+  if(pending)return;activate(el);current=el.dataset.path;resetReplay();
+  const wait=add('coach muted','Reading replay facts…',false,false);
+  try{showPreview(await postJSON('/api/preview',{replay:current}));}
+  catch(e){add('coach err','Could not reach the server. Select the replay again to retry.');}
+  finally{wait.remove();busy(false);renderPractice();}
+}
 function wire(el){ el.onclick=()=>openReplay(el); }
 document.querySelectorAll('.rep').forEach(wire);
-async function upload(file){ current=null; currentPreview=null; sessionOpen=false; log.innerHTML=''; insights.innerHTML=''; q.value=''; busy(true);
-  conversationLog=[];
-  currentInsights=null; currentInsightsPath=null; currentFocus=null; detectedLoading=false; detectedError=''; detectedModel=''; detectedFocus=null; renderPractice();
-  const wait=add('coach muted','Uploading & previewing '+file.name+'…', false, false); const fd=new FormData(); fd.append('file',file); fd.append('habits',JSON.stringify(practiceHabits()));
-  const res=await (await fetch('/api/upload',{method:'POST',body:fd})).json(); wait.remove();
-  if(res.path){ const b=document.createElement('button'); b.className='rep'; b.dataset.path=res.path; b.textContent=res.name; wire(b); list.insertBefore(b,list.firstChild); activate(b); current=res.path; }
-  showPreview(res); }
-['dragover','dragenter'].forEach(ev=>side.addEventListener(ev,e=>{e.preventDefault();side.classList.add('drag');}));
+async function upload(file){
+  if(pending)return;
+  if(!file.name.toLowerCase().endsWith('.aoe2record')){add('coach err','Choose a .aoe2record file.');return;}
+  activate(null);current=null;resetReplay();
+  const wait=add('coach muted','Uploading & previewing '+file.name+'…',false,false);
+  try{
+    const fd=new FormData();fd.append('file',file);fd.append('habits',JSON.stringify(practiceHabits()));
+    const res=await responseJSON(await fetch('/api/upload',{method:'POST',body:fd}));
+    if(res.path&&!res.error){const b=document.createElement('button');b.className='rep';b.dataset.path=res.path;b.textContent=res.name;wire(b);list.insertBefore(b,list.firstChild);activate(b);current=res.path;}
+    showPreview(res);
+  }catch(e){add('coach err','Upload failed. Try uploading the replay again.');}
+  finally{wait.remove();busy(false);fileInput.value='';renderPractice();}
+}
+['dragover','dragenter'].forEach(ev=>side.addEventListener(ev,e=>{e.preventDefault();if(!pending)side.classList.add('drag');}));
 ['dragleave','drop'].forEach(ev=>side.addEventListener(ev,e=>{e.preventDefault();side.classList.remove('drag');}));
-side.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(!f) return; if(f.name.toLowerCase().endsWith('.aoe2record')) upload(f); else add('coach err','⚠️ That is not a .aoe2record file.'); });
-async function ask(){ const m=q.value.trim(); if(!m||!current||!sessionOpen) return; add('you', m); q.value=''; busy(true);
-  const wait=add('coach muted','…', false, false); const res=await postJSON('/api/chat',{replay:current,message:m,habits:practiceHabits(),detected_habits:detectedHabitLabels()}); wait.remove();
-  add(res.error?'coach err':'coach', res.error?('⚠️ '+res.error):res.reply); busy(false); q.focus(); }
+side.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)upload(f);});
+document.getElementById('drop').onclick=()=>{if(!pending)fileInput.click();};
+document.getElementById('drop').onkeydown=e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();if(!pending)fileInput.click();}};
+fileInput.onchange=()=>{if(fileInput.files[0])upload(fileInput.files[0]);};
+async function ask(){
+  const message=q.value.trim();if(!message||!sessionId||!sessionOpen||pending)return;
+  add('you',message);q.value='';busy(true);const wait=add('coach muted','…',false,false);
+  try{
+    const res=await postJSON('/api/chat',{session_id:sessionId,message,habits:practiceHabits(),detected_habits:detectedHabitLabels()});
+    add(res.error?'coach err':'coach',res.error?('⚠️ '+res.error):res.reply,false,undefined,res.error?null:res);
+    if(res.error)q.value=message;
+  }catch(e){q.value=message;add('coach err','Connection interrupted. Your message may have reached the server. Check the conversation download before retrying.');}
+  finally{wait.remove();busy(false);q.focus();renderPractice();}
+}
+
 send.onclick=ask; q.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask();} });
 exportSession.onclick=exportCurrentSession;
 log.addEventListener('click',e=>{ const btn=e.target.closest('[data-focus]'); if(btn) selectFocusPlayer(btn.dataset.focus); });
@@ -802,6 +925,11 @@ wireLeftVerticalResizers();
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    sessions: dict[str, _Session] = {}
+
+    def body() -> dict:
+        value = request.get_json(silent=True)
+        return value if isinstance(value, dict) else {}
 
     @app.route("/")
     def index():
@@ -817,21 +945,22 @@ def create_app() -> Flask:
 
     @app.route("/api/preview", methods=["POST"])
     def api_preview():
-        return _preview_replay((request.json or {}).get("replay", ""))
+        return _preview_replay(body().get("replay", ""))
 
     @app.route("/api/detect-habits", methods=["POST"])
     def api_detect_habits():
-        body = request.json or {}
-        return _detect_habits_for_replay(body.get("replay", ""), body.get("focus_player"))
+        data = body()
+        return _detect_habits_for_replay(data.get("replay", ""), data.get("focus_player"))
 
     @app.route("/api/open", methods=["POST"])
     def api_open():
-        body = request.json or {}
+        data = body()
         return _open_session(
-            body.get("replay", ""),
-            body.get("habits", []),
-            focus_player=body.get("focus_player"),
-            detected_habits=body.get("detected_habits", []),
+            data.get("replay", ""),
+            data.get("habits", []),
+            focus_player=data.get("focus_player"),
+            detected_habits=data.get("detected_habits", []),
+            sessions=sessions,
         )
 
     @app.route("/api/upload", methods=["POST"])
@@ -839,19 +968,31 @@ def create_app() -> Flask:
         f = request.files.get("file")
         if f is None or not f.filename:
             return {"error": "No file uploaded."}
-        name = secure_filename(f.filename) or "upload.aoe2record"
-        _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        dest = _UPLOAD_DIR / name
-        f.save(dest)
+        name = secure_filename(f.filename)
+        if not name or Path(name).suffix.lower() != ".aoe2record":
+            return {"error": "Choose a .aoe2record file."}
+        dest = _UPLOAD_DIR / uuid4().hex / name
         try:
-            habits = json.loads(request.form.get("habits", "[]"))
-        except json.JSONDecodeError:
-            habits = []
-        return {**_preview_replay(str(dest)), "path": str(dest), "name": name, "habits": habits}
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            f.save(dest)
+            preview = _preview_replay(str(dest))
+            if "error" in preview:
+                dest.unlink(missing_ok=True)
+                return preview
+            try:
+                habits = json.loads(request.form.get("habits", "[]"))
+            except json.JSONDecodeError:
+                habits = []
+            return {**preview, "path": str(dest), "name": name, "habits": _clean_habits(habits)}
+        except OSError:
+            dest.unlink(missing_ok=True)
+            return {
+                "error": "Could not save this upload. Check available disk space and try again."
+            }
 
     @app.route("/api/export-session", methods=["POST"])
     def api_export_session():
-        return _export_session(request.json or {})
+        return _export_session(body())
 
     @app.route("/api/minimap")
     def api_minimap():
@@ -862,7 +1003,8 @@ def create_app() -> Flask:
             from .minimap import render_minimap
 
             stem = secure_filename(Path(replay).stem) or "replay"
-            out = _UPLOAD_DIR / f"{stem[:80]}.minimap.png"
+            out = _UPLOAD_DIR / f"{stem[:80]}-{uuid4().hex}.minimap.png"
+            out.parent.mkdir(parents=True, exist_ok=True)
             render_minimap(replay, out)
             return send_file(out, mimetype="image/png", max_age=0)
         except Exception as exc:  # noqa: BLE001
@@ -870,21 +1012,69 @@ def create_app() -> Flask:
 
     @app.route("/api/chat", methods=["POST"])
     def api_chat():
-        body = request.json or {}
-        chat = _SESSIONS.get(str(body.get("replay", "")))
-        if chat is None:
+        data = body()
+        session_id = data.get("session_id")
+        session = sessions.get(session_id) if isinstance(session_id, str) else None
+        if session_id is None:
+            # Compatibility for replay-only clients is safe only with one open session.
+            matches = [s for s in sessions.values() if s.replay == data.get("replay")]
+            if len(matches) > 1:
+                return {
+                    "error": "Multiple sessions use this replay. Send the session_id from /api/open."
+                }
+            session = matches[0] if matches else None
+        if session is None:
             return {"error": "Open a replay first."}
+        message = data.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return {"error": "Enter a message first."}
+        if not session.lock.acquire(blocking=False):
+            return {
+                "error": "A reply is still being generated. Wait before sending another message."
+            }
         try:
+            session.transcript.append({"role": "user", "text": message})
             focus = _practice_focus_block(
-                _clean_habits(body.get("habits", [])),
-                _clean_habits(body.get("detected_habits", [])),
+                _clean_habits(data.get("habits", [])),
+                _clean_habits(data.get("detected_habits", [])),
             )
-            message = str(body.get("message", ""))
-            if focus:
-                message = f"{focus}\n\nPlayer message:\n{message}"
-            return {"reply": chat.send(message).text}
+            prompt = f"{focus}\n\nPlayer message:\n{message}" if focus else message
+            result = session.chat.send(prompt)
+            session.transcript.append(
+                {"role": "assistant", "text": result.text, **result.to_dict()}
+            )
+            return _result_payload(result, "reply")
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
+            error = _model_error(exc)
+            session.transcript.append({"role": "error", "text": error})
+            return {"error": error}
+        finally:
+            session.lock.release()
+
+    @app.route("/api/export/<session_id>")
+    def api_export(session_id: str):
+        session = sessions.get(session_id)
+        if session is None:
+            return {"error": "Open a replay first."}, 404
+        if not session.lock.acquire(blocking=False):
+            return {"error": "Wait for the current reply before downloading."}, 409
+        try:
+            markdown = build_chat_export(
+                replay_name=Path(session.replay).name,
+                map_name=session.metrics.map_name,
+                duration_label=session.metrics.to_dict()["duration_label"],
+                players=_web_preview(session.metrics)["players"],
+                focus_player=session.focus_player,
+                messages=session.transcript,
+            )
+        finally:
+            session.lock.release()
+        name = secure_filename(Path(session.replay).stem) or "replay"
+        return Response(
+            markdown,
+            mimetype="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{name}.conversation.md"'},
+        )
 
     return app
 

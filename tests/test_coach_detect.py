@@ -82,7 +82,12 @@ def test_detect_habits_uses_custom_endpoint_full_model(monkeypatch):
         timeline=[],
     )
     config = Config(
-        "openai", "test-key", "local-strong", "medium", 8000, "http://localhost:11434/v1"
+        "openai",
+        "test-key",
+        "local-strong",
+        "medium",
+        8000,
+        "http://localhost:11434/v1",
     )
     out = detect_habits(metrics, config=config, focus_player="Me")
     assert out["model"] == "local-strong"
@@ -176,3 +181,33 @@ def test_anthropic_haiku_omits_adaptive_effort(monkeypatch):
     )
     assert "thinking" not in calls[0]
     assert "output_config" not in calls[0]
+
+
+def test_detect_habits_resolves_its_task_connection(monkeypatch):
+    chosen = Config("openai", "test-only-key", "chosen-detector", "low", 900)
+    loader_calls = []
+
+    def loader(**kwargs):
+        loader_calls.append(kwargs)
+        return chosen
+
+    def fake_run(_system, _user, *, config, stream, on_text):
+        assert config is chosen
+        return SimpleNamespace(text='{"habits":[]}', model=config.model, cost_note="usage")
+
+    monkeypatch.setattr("aoe2coach.coach.load_config", loader)
+    monkeypatch.setattr("aoe2coach.coach._run", fake_run)
+    metrics = SimpleNamespace(
+        map_name="Arabia",
+        duration_s=1800,
+        recorded_at=None,
+        backend="full",
+        rated=True,
+        matchup_context={},
+        players=[],
+        battles=[],
+        timeline=[],
+    )
+    out = detect_habits(metrics)
+    assert loader_calls == [{"require_key": True, "task": "detect"}]
+    assert out["model"] == "chosen-detector"

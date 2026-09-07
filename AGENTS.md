@@ -24,6 +24,7 @@ report. Pipeline: **parse → metrics → coach → report**.
 | — | `dataupdate.py` | Regenerate bundled `data/*.json` from `mgz.reference` + aoe2techtree. | No |
 | — | `mcp_server.py` | Exposes layers 1–2 as MCP tools (hybrid path). | No |
 | — | `config.py` | Env + API-key handling. | — |
+| — | `doctor.py` | Offline setup diagnostics; no provider requests or key output. | No |
 | — | `benchmarks.py`, `prompts/*.md` | Cached "what good looks like" context (replay + trends). | — |
 | — | `civdata.py`, `replays.py` | Bundled-data name resolution; cross-platform replay discovery. | No |
 | — | `data/*.json` | Generated name/terrain tables (committed; refreshed by `update-data`). | No |
@@ -31,7 +32,8 @@ report. Pipeline: **parse → metrics → coach → report**.
 ## Hard rules
 
 1. **Secrets only from the environment.** Provider keys come from `ANTHROPIC_API_KEY`
-   or `OPENAI_API_KEY` via `config.load_config()`. Never hard-code a key, never add
+   or `OPENAI_API_KEY`, or the variable named by a task’s `API_KEY_ENV`, via
+   `config.load_config()`. Never hard-code a key, never add
    a default value, never log or print it. `.env` is gitignored; `env.example` is
    the template.
 2. **Never commit real replays.** They embed player names + Steam IDs (PII). The
@@ -59,6 +61,11 @@ report. Pipeline: **parse → metrics → coach → report**.
   and defaults to `high`; hosted OpenAI accepts `none|low|medium|high|xhigh` and defaults
   to `high`. Custom `OPENAI_BASE_URL` endpoints do not receive
   `reasoning_effort` because support varies.
+- Model calls resolve `load_config(task="analysis" | "chat" | "trends" | "detect")`.
+  Analysis/chat/trends inherit global configuration; detection retains its configured
+  lightweight defaults. Explicit library `Config` arguments remain supported.
+- Respect `THINKING=off` by omitting adaptive-thinking and effort parameters. Preview,
+  export, diagnostics, and metrics never call models.
 - **Prompt caching:** on the Anthropic path, system prompt + `benchmarks.py` are the
   stable cached prefix (cache breakpoint on the last system block); the per-replay
   JSON goes in the user turn, after the breakpoint. Don't interpolate volatile data

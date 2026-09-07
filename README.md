@@ -87,6 +87,37 @@ The CLI and browser UI read local `.env`; the web app never asks for or stores A
 Optional model overrides, reasoning effort, and OpenAI-compatible endpoint examples are in
 [`env.example`](env.example).
 
+### Assign models to tasks
+
+Keep your existing global provider/model settings, and override individual tasks when
+useful: `AOE2COACH_ANALYSIS_MODEL` for reports, `AOE2COACH_CHAT_MODEL` for follow-ups,
+`AOE2COACH_TRENDS_MODEL` for multi-game coaching, and `AOE2COACH_DETECT_MODEL` for
+habit suggestions. Analysis, chat, and trends inherit the global model by default;
+habit detection retains its existing lightweight default.
+
+Each task also accepts `PROVIDER`, `BASE_URL`, `API_KEY_ENV`, `THINKING`, `EFFORT`,
+and `MAX_TOKENS` overrides with the same prefix. `API_KEY_ENV` names the environment
+variable containing the credential. Changing provider uses that provider's defaults,
+so the previous provider's model, endpoint, and key override do not silently carry over.
+Custom OpenAI-compatible endpoints require a model ID served by that endpoint.
+`THINKING=off` omits Anthropic adaptive-thinking and effort parameters for models that
+do not accept them. See `env.example` for provider-specific details and examples.
+
+Browser follow-ups retain the replay and conversation when using a different model.
+Answers show the model used and the token usage supplied by the provider; missing usage
+is labeled unavailable. The session export includes these labels. Restart the local web
+server after changing `.env`. MCP clients choose their own model; these assignments
+control aoe2coach's API requests.
+
+### Check your setup
+
+`aoe2coach doctor` checks parser installation, each task's model configuration, key
+presence, provider SDKs, optional features, and replay discovery without making network
+requests or printing key values. It cannot verify key validity, model availability, or
+compatibility with a particular replay patch. Missing optional features are warnings;
+invalid parser or coaching configuration produces exit code 1. Use `--json` for
+machine-readable checks.
+
 Prefer to bring the model through an MCP-compatible assistant instead of configuring an
 aoe2coach API key? That path is in progress; see
 [Other ways to run it](#other-ways-to-run-it) and [docs/mcp.md](docs/mcp.md).
@@ -114,6 +145,7 @@ aoe2coach analyze latest        # save a report
 aoe2coach trends --last 10      # recurring habits
 aoe2coach metrics latest        # stats JSON
 aoe2coach minimap latest        # map PNG
+aoe2coach doctor                # offline setup diagnostics
 ```
 
 Bring an API key. Cost depends on the model and provider: aoe2coach can use a cheaper
@@ -242,8 +274,8 @@ being polished. Claude Code/Desktop are the currently documented clients. Full s
   from `mgz-fast` and routing old/new replays through the right parser automatically.
 - **MCP assistant workflow** — polish the MCP path so players can coach from compatible
   assistants, with packaged config snippets and clearer replay UX.
-- **Model choice and cost profiles** — add documented presets for flagship, budget,
-  OpenAI-compatible, and local models, plus clearer cache/cost reporting.
+- **Model cost profiles** — extend task-specific model assignments and token labels with
+  optional presets and clearer cost estimates.
 - **Coaching evaluation harness** — maintain a small anonymized replay corpus with expected
   metric snapshots and golden coaching checks, so parser changes and prompt edits can be
   regression-tested.
